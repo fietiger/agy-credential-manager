@@ -191,9 +191,41 @@ pub async fn set_active_account(
                 },
             }
         }
-        client_sync::ClientKind::Classic | client_sync::ClientKind::Ide => {
-            client_sync::sync_client_db(target, &acc)
+        client_sync::ClientKind::Classic => {
+            // The desktop app shares the `~/.gemini` sign-in record with the
+            // CLI, so the keyring is the store it actually reads. The legacy
+            // `state.vscdb` copy is refreshed as well, for the VS Code-era
+            // builds that still read it.
+            let mut ok = true;
+            let mut parts = Vec::new();
+            match agy_sync::sync_to_keyring(&acc) {
+                Ok(()) => parts.push(format!(
+                    "keyring {}/{} synced",
+                    agy_sync::KEYRING_SERVICE,
+                    agy_sync::KEYRING_ENTRY
+                )),
+                Err(e) => {
+                    ok = false;
+                    parts.push(format!("keyring sync failed: {}", e));
+                }
+            }
+            if let Some(db) = client_sync::installed_db_path(target) {
+                match client_sync::inject_account(&db, &acc) {
+                    Ok(()) => parts.push(format!("state.vscdb updated: {}", db.display())),
+                    Err(e) => {
+                        ok = false;
+                        parts.push(format!("state.vscdb failed: {}", e));
+                    }
+                }
+            }
+            client_sync::ClientSyncResult {
+                client: target,
+                name: target.name().to_string(),
+                ok,
+                detail: parts.join("; "),
+            }
         }
+        client_sync::ClientKind::Ide => client_sync::sync_client_db(target, &acc),
     };
 
     if result.ok {
@@ -248,7 +280,16 @@ pub fn list_clients() -> AppResult<Vec<client_sync::ClientStatus>> {
         client_sync::ClientKind::Ide,
     ] {
         let db_path = client_sync::installed_db_path(kind);
-        let current_email = db_path.as_ref().and_then(client_sync::read_client_email);
+        // The current Antigravity desktop app no longer keeps its sign-in in
+        // the legacy `state.vscdb` (that record goes stale and can name an
+        // account that signed out long ago). It shares the `~/.gemini`
+        // sign-in record with the CLI, so prefer that and only fall back to
+        // the database.
+        let current_email = match kind {
+            client_sync::ClientKind::Classic => agy_sync::active_google_account_email()
+                .or_else(|| db_path.as_ref().and_then(client_sync::read_client_email)),
+            _ => db_path.as_ref().and_then(client_sync::read_client_email),
+        };
         out.push(client_sync::ClientStatus {
             client: kind,
             name: kind.name().to_string(),

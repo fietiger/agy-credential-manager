@@ -3,15 +3,18 @@
 //! Switching the active account writes it into every installed
 //! Antigravity client on this machine:
 //!
-//! - **agy CLI** reads the OS keyring (service `antigravity`, entry
-//!   `oauth_token`) — handled by [`crate::modules::agy_sync`].
-//! - **Antigravity** (classic desktop app) and **Antigravity IDE** are
-//!   VS Code-style apps whose sign-in state lives in a SQLite database
-//!   `state.vscdb` (table `ItemTable`) under their user-data directory.
-//!   Switching means injecting the account's OAuth token into that
+//! - **agy CLI** reads the OS keyring (service `gemini`, entry `antigravity`)
+//!   and keeps a file copy at `~/.gemini/antigravity-cli/antigravity-oauth-token`
+//!   — handled by [`crate::modules::agy_sync`].
+//! - **Antigravity** (current desktop app) shares that `~/.gemini` sign-in
+//!   record; its legacy `state.vscdb` values are stale, so they are only a
+//!   fallback for reading and are still updated for VS Code-era builds.
+//! - **Antigravity IDE** is a VS Code-style app whose sign-in state lives in
+//!   a SQLite database `state.vscdb` (table `ItemTable`) under its user-data
+//!   directory. Switching means injecting the account's OAuth token into that
 //!   database in the "unified state sync" format (see
-//!   [`crate::modules::state_proto`]) — the same keys the apps
-//!   themselves write when a user signs in.
+//!   [`crate::modules::state_proto`]) — the same keys the apps themselves
+//!   write when a user signs in.
 
 use crate::error::{AppError, AppResult};
 use crate::models::account::Account;

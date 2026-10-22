@@ -309,6 +309,12 @@ fn active_google_account() -> Option<String> {
         .map(|s| s.to_string())
 }
 
+/// The account recorded in `~/.gemini/google_accounts.json`, shared by the
+/// agy CLI and the Antigravity desktop app.
+pub fn active_google_account_email() -> Option<String> {
+    active_google_account()
+}
+
 /// Clear the CLI credential (used when removing the active account).
 pub fn clear_keyring() -> AppResult<()> {
     logger::log_info("keyring", "Clearing agy CLI keyring entry");
