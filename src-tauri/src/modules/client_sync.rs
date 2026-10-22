@@ -163,8 +163,7 @@ fn read_email_from_conn(conn: &Connection) -> Option<String> {
     }
 
     let token_entry = get_key(conn, KEY_OAUTH_TOKEN).ok().flatten()?;
-    let token_payload =
-        state_proto::decode_unified_state_payload(&token_entry, SENTINEL_OAUTH)?;
+    let token_payload = state_proto::decode_unified_state_payload(&token_entry, SENTINEL_OAUTH)?;
     let id_token = state_proto::find_field(&token_payload, 5).ok()??;
     let id_token = String::from_utf8(id_token).ok()?;
     crate::modules::agy_sync::email_from_id_token(&id_token)
@@ -199,8 +198,7 @@ pub struct StoredCredential {
 /// e.g. after it signed out and cleared its own record.
 pub fn read_client_credential(kind: ClientKind) -> Option<StoredCredential> {
     let db = installed_db_path(kind)?;
-    let conn =
-        Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+    let conn = Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
 
     let entry = get_key(&conn, KEY_OAUTH_TOKEN).ok().flatten()?;
     let payload = state_proto::decode_unified_state_payload(&entry, SENTINEL_OAUTH)?;
