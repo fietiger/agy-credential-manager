@@ -29,6 +29,8 @@ pub fn run() {
             // oauth
             start_oauth,
             poll_oauth,
+            open_auth_url,
+            submit_oauth_code,
             import_refresh_token,
             import_accounts_json,
             import_local_accounts,

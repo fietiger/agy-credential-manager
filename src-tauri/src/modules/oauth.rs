@@ -21,12 +21,25 @@ use tokio::net::TcpListener;
 use uuid::Uuid;
 
 // ── Google OAuth constants ────────────────────────────────────────────────
-// These are the public Antigravity OAuth client credentials, embedded in the
-// official Antigravity CLI distribution. They are not secret.
+// This is the public Antigravity OAuth client id, embedded in the official
+// Antigravity CLI distribution. It is not a secret.
 const CLIENT_ID: &str = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const USERINFO_URL: &str = "https://www.googleapis.com/oauth2/v2/userinfo";
+
+/// Optional client secret for the token endpoint.
+///
+/// The Antigravity client is an installed-app OAuth client, so Google accepts
+/// the exchange with just the client id — the secret is not required. Users
+/// who need it (e.g. a client registered as a web application) can supply one
+/// through the environment instead of it being baked into the source.
+fn client_secret() -> Option<String> {
+    std::env::var("AGY_OAUTH_CLIENT_SECRET")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
 
 const SCOPES: &str = "openid https://www.googleapis.com/auth/cloud-platform \
 https://www.googleapis.com/auth/userinfo.email \
@@ -71,10 +84,20 @@ pub fn build_auth_url(port: u16) -> String {
     url.to_string()
 }
 
-/// Start the local loopback OAuth server and wait for the callback.
+/// Start the local loopback OAuth server and wait for the code.
 ///
-/// This blocks the current async task until the user completes the flow.
-pub async fn start_oauth_flow(port: u16) -> AppResult<OAuthResult> {
+/// The authorization URL is **not** opened here: the UI offers "open in
+/// browser" and "copy link" so the user decides (the link may also be pasted
+/// into a browser on another machine).
+///
+/// The code can arrive two ways, whichever happens first:
+/// - the loopback callback from the browser, or
+/// - `manual_rx`, when the user pastes the callback URL / authorization code
+///   because the browser never came back to this machine.
+pub async fn start_oauth_flow(
+    port: u16,
+    mut manual_rx: tokio::sync::mpsc::Receiver<String>,
+) -> AppResult<OAuthResult> {
     let redirect_uri = format!("http://127.0.0.1:{}/callback", port);
     let auth_url = build_auth_url(port);
 
@@ -85,9 +108,10 @@ pub async fn start_oauth_flow(port: u16) -> AppResult<OAuthResult> {
             port, redirect_uri
         ),
     );
+    logger::log_info("oauth", &format!("Authorization URL: {}", auth_url));
 
-    // Bind the listener before opening the browser, otherwise a very fast
-    // callback could arrive while no one is listening on the port.
+    // Bind before the user can open the link, otherwise a fast callback could
+    // arrive while no one is listening on the port.
     let listener = TcpListener::bind(format!("127.0.0.1:{}", port))
         .await
         .map_err(|e| {
@@ -99,16 +123,6 @@ pub async fn start_oauth_flow(port: u16) -> AppResult<OAuthResult> {
         "oauth",
         &format!("Bound OAuth listener to 127.0.0.1:{}", port),
     );
-
-    // Open the browser (best effort – the user can copy the URL manually).
-    if let Err(e) = open(&auth_url) {
-        logger::log_warn(
-            "oauth",
-            &format!("Could not open browser: {}. Auth URL: {}", e, auth_url),
-        );
-    } else {
-        logger::log_info("oauth", "Browser opened with auth URL");
-    }
 
     let code_rx: Arc<(tokio::sync::Mutex<Option<String>>, AtomicBool)> =
         Arc::new((tokio::sync::Mutex::new(None), AtomicBool::new(false)));
@@ -171,9 +185,25 @@ pub async fn start_oauth_flow(port: u16) -> AppResult<OAuthResult> {
         }
     });
 
-    // Wait for the code to arrive (with a 10-minute timeout)
-    logger::log_info("oauth", "Waiting for OAuth callback (timeout: 10 min)…");
-    let code = wait_for_code(&code_rx).await?;
+    // Wait for the code: either the browser's loopback callback or a code the
+    // user pasted into the app, whichever comes first.
+    logger::log_info(
+        "oauth",
+        "Waiting for the authorization code (callback or manual paste, timeout: 10 min)…",
+    );
+    let code = tokio::select! {
+        from_callback = wait_for_code(&code_rx) => from_callback?,
+        manual = manual_rx.recv() => match manual {
+            Some(code) => {
+                logger::log_info("oauth", "Authorization code submitted manually");
+                code
+            }
+            None => {
+                listener_task.abort();
+                return Err(AppError::Oauth("OAuth flow cancelled".to_string()));
+            }
+        },
+    };
     listener_task.abort();
 
     if let Some(reason) = code.strip_prefix("@error:") {
@@ -303,12 +333,15 @@ fn percent_decode(s: &str) -> String {
 async fn exchange_code(code: &str, redirect_uri: &str) -> AppResult<RawTokenResponse> {
     logger::log_info("oauth", "Exchanging authorization code for token…");
     let client = reqwest::Client::new();
-    let form = [
-        ("client_id", CLIENT_ID),
-        ("code", code),
-        ("redirect_uri", redirect_uri),
-        ("grant_type", "authorization_code"),
+    let mut form: Vec<(&str, String)> = vec![
+        ("client_id", CLIENT_ID.to_string()),
+        ("code", code.to_string()),
+        ("redirect_uri", redirect_uri.to_string()),
+        ("grant_type", "authorization_code".to_string()),
     ];
+    if let Some(secret) = client_secret() {
+        form.push(("client_secret", secret));
+    }
     let resp = client
         .post(TOKEN_URL)
         .header("User-Agent", "AntigravityCLI/1.0 (agy-credential-manager)")
@@ -372,11 +405,14 @@ pub async fn refresh_token(token: &TokenData) -> Result<TokenData, String> {
     );
 
     let client = reqwest::Client::new();
-    let form = [
-        ("client_id", CLIENT_ID),
-        ("grant_type", "refresh_token"),
-        ("refresh_token", token.refresh_token.as_str()),
+    let mut form: Vec<(&str, String)> = vec![
+        ("client_id", CLIENT_ID.to_string()),
+        ("grant_type", "refresh_token".to_string()),
+        ("refresh_token", token.refresh_token.clone()),
     ];
+    if let Some(secret) = client_secret() {
+        form.push(("client_secret", secret));
+    }
     let resp = client
         .post(TOKEN_URL)
         .header("User-Agent", "AntigravityCLI/1.0 (agy-credential-manager)")
@@ -431,24 +467,95 @@ pub async fn refresh_token(token: &TokenData) -> Result<TokenData, String> {
     })
 }
 
-/// Open a URL in the default browser (best effort).
-fn open(url: &str) -> std::io::Result<()> {
+/// Open a URL in the default browser.
+///
+/// Deliberately does **not** go through `cmd /C start`: cmd.exe treats `&` as
+/// a command separator, so an OAuth URL gets truncated at its first `&` and
+/// Google answers "Required parameter is missing: response_type". `explorer`
+/// receives the URL as a single argument, and the other platforms' openers do
+/// the same, so the query string survives intact.
+pub fn open_in_browser(url: &str) -> std::io::Result<()> {
     if url.is_empty() {
         return Ok(());
     }
+    logger::log_info("oauth", &format!("Opening in browser: {}", url));
+
     let mut cmd = if cfg!(target_os = "macos") {
         let mut c = std::process::Command::new("open");
         c.arg(url);
         c
     } else if cfg!(target_os = "windows") {
-        let mut c = std::process::Command::new("cmd");
-        c.args(["/C", "start", "", url]);
+        let mut c = std::process::Command::new("explorer");
+        c.arg(url);
         c
     } else {
         let mut c = std::process::Command::new("xdg-open");
         c.arg(url);
         c
     };
-    cmd.spawn()?;
-    Ok(())
+    cmd.spawn().map(|_| ())
+}
+
+/// Extract the authorization code from whatever the user pasted.
+///
+/// Accepts the full callback URL (`http://127.0.0.1:PORT/callback?code=...`),
+/// a bare `code=...` fragment, or just the code itself.
+pub fn parse_code_input(input: &str) -> Option<String> {
+    let raw = input.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    // Look for a real `code=` query parameter, so an authorization URL that
+    // contains `response_type=code` is not mistaken for one.
+    for marker in ["?code=", "&code="] {
+        if let Some(idx) = raw.find(marker) {
+            let rest = &raw[idx + marker.len()..];
+            let value = rest.split('&').next().unwrap_or("").trim();
+            let value = percent_decode(value);
+            if !value.is_empty() {
+                return Some(value);
+            }
+        }
+    }
+    if let Some(rest) = raw.strip_prefix("code=") {
+        let value = percent_decode(rest.split('&').next().unwrap_or("").trim());
+        if !value.is_empty() {
+            return Some(value);
+        }
+    }
+
+    // Bare code: Google's look like `4/0A...`. Anything short or containing
+    // whitespace is treated as a paste mistake.
+    if raw.starts_with("4/") || raw.starts_with("1/") || (raw.len() > 20 && !raw.contains(char::is_whitespace)) {
+        return Some(raw.to_string());
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_code_input;
+
+    #[test]
+    fn parses_full_callback_url() {
+        let input =
+            "http://127.0.0.1:61234/callback?state=abc&code=4%2F0AbC-dEf&scope=openid#frag";
+        assert_eq!(parse_code_input(input).as_deref(), Some("4/0AbC-dEf"));
+    }
+
+    #[test]
+    fn parses_bare_code_and_fragment() {
+        assert_eq!(parse_code_input("4/0Axyz123").as_deref(), Some("4/0Axyz123"));
+        assert_eq!(parse_code_input("  code=4/0Asdf  ").as_deref(), Some("4/0Asdf"));
+    }
+
+    #[test]
+    fn rejects_authorization_url_without_code() {
+        // `response_type=code` must not be read as the authorization code.
+        let auth_url = "https://accounts.google.com/o/oauth2/v2/auth?client_id=x&response_type=code&state=y";
+        assert_eq!(parse_code_input(auth_url), None);
+        assert_eq!(parse_code_input("not a code"), None);
+        assert_eq!(parse_code_input(""), None);
+    }
 }

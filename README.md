@@ -7,7 +7,7 @@
 ## 功能
 
 - **多账号管理**：添加、删除多个账号，列表展示邮箱、标签、状态与掩码后的 token
-- **Google OAuth 登录**：内置 OAuth 流程（本地回调），登录成功后自动保存凭证
+- **Google OAuth 登录**：内置 OAuth 流程（本地 loopback 回调），登录成功后自动保存凭证。链接不会替你自动打开，由你选择「在浏览器中打开」或「复制链接」（也可以复制到另一台机器的浏览器）；如果浏览器没有回调回本机，还可以把地址栏里的回调链接或 authorization code 粘回来完成登录
 - **导入 refresh token**：已有 refresh token 时可直接导入生成账号
 - **一键导入本地账号**：读取本机三个客户端当前登录的凭证（agy CLI 的 keyring、Antigravity 与 Antigravity IDE 的 `state.vscdb`），一键收进管理器统一管理；按邮箱与 refresh token 去重，重复的只跳过不报错，每个客户端的处理结果（已导入 / 已存在 / 未登录 / 读不到邮箱）都会显示出来
 - **文件批量导入**：可直接导入 Antigravity-Manager 导出的 JSON 文件（裸数组 `[{email, refresh_token}]`），也兼容本应用自己的导出格式；自动跳过无效条目与重复账号并报告数量，邮箱取自文件、不会显示 unknown
@@ -69,6 +69,8 @@ cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
 调试日志：设置环境变量 `AGY_LOG_DEBUG=1` 后再启动应用，可输出 debug 级别日志。
+
+OAuth 客户端密钥：Antigravity 用的是「已安装应用」类型的 OAuth 客户端，换取 token 时只需 client id，不需要密钥。如果换成其他类型的客户端、需要带 client secret，用环境变量 `AGY_OAUTH_CLIENT_SECRET` 提供，不要把密钥写进源码（GitHub 的推送保护会直接拒绝含密钥的提交）。
 
 ## 项目结构
 

@@ -29,6 +29,15 @@ fn oauth_tasks() -> &'static Arc<Mutex<HashMap<u16, OauthTaskResult>>> {
     OAUTH_TASKS.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
 }
 
+/// Channels that let the UI hand a manually pasted authorization code to a
+/// running OAuth flow, keyed by the flow's callback port.
+static MANUAL_CODES: std::sync::OnceLock<Arc<Mutex<HashMap<u16, tokio::sync::mpsc::Sender<String>>>>> =
+    std::sync::OnceLock::new();
+
+fn manual_codes() -> &'static Arc<Mutex<HashMap<u16, tokio::sync::mpsc::Sender<String>>>> {
+    MANUAL_CODES.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+}
+
 // ── DTO types returned to the frontend ───────────────────────────────────
 
 /// A safe (non-sensitive) view of an account for the UI.
@@ -306,8 +315,12 @@ pub fn list_clients() -> AppResult<Vec<client_sync::ClientStatus>> {
 }
 
 /// Start the OAuth flow.
-/// Returns the auth URL and the local callback port.
-/// The frontend should open the auth_url in the browser, then poll `poll_oauth(port)`.
+///
+/// Returns the authorization URL and the local callback port. The link is not
+/// opened here — the UI offers "open in browser" / "copy link" so the user
+/// chooses (the link may also be used on another machine). Either the loopback
+/// callback or a pasted code (`submit_oauth_code`) completes the flow; the
+/// frontend polls `poll_oauth(port)` meanwhile.
 #[tauri::command]
 pub async fn start_oauth() -> AppResult<OauthStartResponse> {
     // Pick a random available port
@@ -328,9 +341,18 @@ pub async fn start_oauth() -> AppResult<OauthStartResponse> {
         tasks.insert(port, OauthTaskResult::Pending);
     }
 
+    // Channel for a manually pasted code
+    let (manual_tx, manual_rx) = tokio::sync::mpsc::channel::<String>(1);
+    {
+        let mut senders = manual_codes()
+            .lock()
+            .map_err(|_| AppError::Other("manual_codes lock poisoned".into()))?;
+        senders.insert(port, manual_tx);
+    }
+
     // Spawn the OAuth flow
     let _oauth_task = tokio::spawn(async move {
-        let result = oauth::start_oauth_flow(port).await;
+        let result = oauth::start_oauth_flow(port, manual_rx).await;
         let mut tasks = oauth_tasks().lock().expect("oauth_tasks lock poisoned");
         match result {
             Ok(oauth_result) => {
@@ -353,11 +375,61 @@ pub async fn start_oauth() -> AppResult<OauthStartResponse> {
                 tasks.insert(port, OauthTaskResult::Failed(e.to_string()));
             }
         }
+        drop(tasks);
+        if let Ok(mut senders) = manual_codes().lock() {
+            senders.remove(&port);
+        }
     });
 
     Ok(OauthStartResponse {
         port,
         auth_url: oauth::build_auth_url(port),
+    })
+}
+
+/// Open the authorization URL in the system browser, at the user's request.
+#[tauri::command]
+pub fn open_auth_url(url: String) -> AppResult<()> {
+    let parsed = url::Url::parse(&url)
+        .map_err(|e| AppError::Validation(format!("Invalid authorization URL: {}", e)))?;
+    let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+    let is_google = parsed.scheme() == "https" && (host == "google.com" || host.ends_with(".google.com"));
+    let is_loopback =
+        parsed.scheme() == "http" && (host == "127.0.0.1" || host == "localhost" || host == "::1");
+    if !is_google && !is_loopback {
+        return Err(AppError::Validation(
+            "Refusing to open a URL that is not a Google authorization page".to_string(),
+        ));
+    }
+    oauth::open_in_browser(&url).map_err(|e| {
+        logger::log_error("oauth", &format!("Could not open browser: {}", e));
+        AppError::Other(format!("Could not open the browser: {}", e))
+    })
+}
+
+/// Hand a manually pasted callback URL / authorization code to the running flow.
+#[tauri::command]
+pub fn submit_oauth_code(port: u16, input: String) -> AppResult<()> {
+    let code = oauth::parse_code_input(&input).ok_or_else(|| {
+        AppError::Validation(
+            "No authorization code found. Paste the full callback URL or the code itself."
+                .to_string(),
+        )
+    })?;
+
+    let sender = manual_codes()
+        .lock()
+        .map_err(|_| AppError::Other("manual_codes lock poisoned".into()))?
+        .get(&port)
+        .cloned()
+        .ok_or_else(|| AppError::Oauth("No pending OAuth flow on this port".to_string()))?;
+
+    logger::log_info(
+        "oauth",
+        &format!("Code pasted by the user for port {}", port),
+    );
+    sender.try_send(code).map_err(|e| {
+        AppError::Other(format!("Could not hand the code to the OAuth flow: {}", e))
     })
 }
 

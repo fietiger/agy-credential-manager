@@ -44,6 +44,12 @@ jobs:
         continue-on-error: true
         run: cd src-tauri && cargo clippy --all-targets -- -D warnings
 
+      # Unit tests are informational for now: they cover the pure helpers
+      # (state.vscdb payload encoding, OAuth code parsing, import mapping).
+      - name: Unit tests
+        continue-on-error: true
+        run: cd src-tauri && cargo test --lib
+
   # ── 2. Build（三平台，直接产出可执行文件）────────────────────────────────
   build:
     runs-on: ${{ matrix.os }}

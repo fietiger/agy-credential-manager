@@ -93,15 +93,25 @@
     </div>
 
     <div class="oauth-section" id="oauth-section">
-      <strong>OAuth in progress</strong>
+      <strong>OAuth authorization</strong>
       <div style="margin-top:8px; font-size:0.8rem; color:#ccc;">
-        Your browser should have opened the Google consent screen. If not, click the URL below:
+        Open this link yourself — in this browser or on another machine — and finish the Google
+        sign-in. The app will not open it for you.
       </div>
       <div class="oauth-url" id="oauth-url"></div>
-      <div class="oauth-msg" id="oauth-msg">Waiting for authorization…</div>
-      <div style="margin-top:10px;">
+      <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
+        <button id="btn-oauth-open">Open in browser</button>
+        <button class="secondary" id="btn-oauth-copy">Copy link</button>
+      </div>
+      <div style="margin-top:14px; font-size:0.8rem; color:#ccc;">
+        Browser did not come back to this machine? Paste the callback URL, or just the code:
+      </div>
+      <input type="text" id="input-oauth-code" placeholder="http://127.0.0.1:PORT/callback?code=… or 4/0A…" />
+      <div style="margin-top:10px; display:flex; gap:8px;">
+        <button id="btn-oauth-submit">Submit</button>
         <button class="secondary" id="btn-oauth-cancel">Cancel</button>
       </div>
+      <div class="oauth-msg" id="oauth-msg">Waiting for authorization…</div>
     </div>
 
     <div class="import-section" id="import-section">
@@ -261,17 +271,21 @@
     }
 
     // ── OAuth flow ────────────────────────────────────────────────────────
+    let oauthUrl = '';
+
     async function startOAuth() {
       $('oauth-section').classList.add('show');
       $('oauth-msg').className = 'oauth-msg pending';
       $('oauth-msg').textContent = 'Starting OAuth…';
+      $('input-oauth-code').value = '';
       try {
         const res = await invoke('start_oauth');
         oauthPort = res.port;
+        oauthUrl = res.auth_url;
         $('oauth-url').textContent = res.auth_url;
-        $('oauth-url').onclick = () => {
-          window.open(res.auth_url, '_blank');
-        };
+        $('oauth-msg').className = 'oauth-msg';
+        $('oauth-msg').textContent =
+          'Waiting for authorization — open the link above (or paste the result below)…';
         // poll every 2s
         clearInterval(pollTimer);
         pollTimer = setInterval(async () => {
@@ -291,6 +305,54 @@
         clearInterval(pollTimer);
         $('oauth-section').classList.remove('show');
         alert('Failed to start OAuth: ' + e);
+      }
+    }
+
+    async function openAuthUrl() {
+      if (!oauthUrl) return;
+      try {
+        await invoke('open_auth_url', { url: oauthUrl });
+      } catch (e) {
+        $('oauth-msg').className = 'oauth-msg error';
+        $('oauth-msg').textContent = 'Could not open the browser: ' + e;
+      }
+    }
+
+    async function copyAuthUrl() {
+      if (!oauthUrl) return;
+      const msg = $('oauth-msg');
+      try {
+        await navigator.clipboard.writeText(oauthUrl);
+        msg.className = 'oauth-msg success';
+        msg.textContent = 'Link copied to the clipboard.';
+      } catch (e) {
+        // Clipboard API can be blocked; fall back to selecting the text.
+        const range = document.createRange();
+        range.selectNodeContents($('oauth-url'));
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        msg.className = 'oauth-msg';
+        msg.textContent = 'The link is selected — press Ctrl+C to copy.';
+      }
+    }
+
+    async function submitOAuthCode() {
+      const input = $('input-oauth-code').value.trim();
+      const msg = $('oauth-msg');
+      if (!input) {
+        msg.className = 'oauth-msg error';
+        msg.textContent = 'Paste the callback URL or the authorization code first.';
+        return;
+      }
+      try {
+        await invoke('submit_oauth_code', { port: oauthPort, input });
+        msg.className = 'oauth-msg success';
+        msg.textContent = 'Code submitted — exchanging it for a token…';
+        $('input-oauth-code').value = '';
+      } catch (e) {
+        msg.className = 'oauth-msg error';
+        msg.textContent = 'Submit failed: ' + e;
       }
     }
 
@@ -405,6 +467,9 @@
 
     // ── wire up buttons ─────────────────────────────────────────────────
     $('btn-add-oauth').onclick = startOAuth;
+    $('btn-oauth-open').onclick = openAuthUrl;
+    $('btn-oauth-copy').onclick = copyAuthUrl;
+    $('btn-oauth-submit').onclick = submitOAuthCode;
     $('btn-oauth-cancel').onclick = cancelOAuth;
     $('btn-add-manual').onclick = () => $('import-section').classList.toggle('show');
     $('btn-import-ok').onclick = importManual;
