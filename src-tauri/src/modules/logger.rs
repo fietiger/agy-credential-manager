@@ -42,7 +42,11 @@ struct LoggerState {
 static LOGGER: OnceLock<Mutex<LoggerState>> = OnceLock::new();
 
 fn logger_state() -> &'static Mutex<LoggerState> {
-    LOGGER.get_or_init(|| Mutex::new(LoggerState { min_level: LogLevel::Info }))
+    LOGGER.get_or_init(|| {
+        Mutex::new(LoggerState {
+            min_level: LogLevel::Info,
+        })
+    })
 }
 
 /// Initialise the logger. Call once at app startup.
@@ -66,8 +70,7 @@ fn log_dir() -> PathBuf {
 
 fn log_file_path() -> Result<PathBuf, String> {
     let dir = log_dir();
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("cannot create log dir {:?}: {}", dir, e))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create log dir {:?}: {}", dir, e))?;
     Ok(dir.join("app.log"))
 }
 
@@ -119,7 +122,13 @@ fn append_line(level: LogLevel, module: &str, message: &str) {
     let (y, mo, d) = days_to_ymd(days);
     let ts_str = format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, mo, d, h, m, s);
 
-    let line = format!("[{}] [{}] [{}] {}\n", ts_str, level.as_str(), module, message);
+    let line = format!(
+        "[{}] [{}] [{}] {}\n",
+        ts_str,
+        level.as_str(),
+        module,
+        message
+    );
 
     let path = match log_file_path() {
         Ok(p) => p,

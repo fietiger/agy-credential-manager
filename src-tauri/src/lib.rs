@@ -1,10 +1,10 @@
 mod commands;
+mod error;
 mod models;
 mod modules;
-mod error;
 
-use commands::*;
 use crate::modules::logger;
+use commands::*;
 
 pub fn run() {
     // Initialise logger (verbose if AGY_LOG_DEBUG=1)
@@ -30,6 +30,8 @@ pub fn run() {
             start_oauth,
             poll_oauth,
             import_refresh_token,
+            import_accounts_json,
+            list_clients,
             // status
             get_status,
             // export

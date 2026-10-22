@@ -63,6 +63,10 @@
       margin-top: 8px;
     }
     .empty { text-align: center; color: #555; padding: 40px; font-size: 0.9rem; }
+    .clients-section { margin-top: 18px; border: 1px solid #2b2b4d; border-radius: 8px; padding: 12px 14px; }
+    .client-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; font-size: 0.85rem; color: #ddd; }
+    .client-badge { font-size: 0.72rem; padding: 2px 8px; border-radius: 10px; background: #274d27; color: #a5dba5; white-space: nowrap; }
+    .client-badge.off { background: #34344a; color: #999; }
   </style>
 </head>
 <body>
@@ -76,6 +80,15 @@
       <button id="btn-add-oauth">Add via OAuth</button>
       <button class="secondary" id="btn-add-manual">Add Refresh Token</button>
       <button class="secondary" id="btn-export">Export JSON</button>
+      <button class="secondary" id="btn-import-file">Import JSON</button>
+      <input type="file" id="input-import-file" accept=".json,application/json" style="display:none" />
+    </div>
+    <div class="oauth-msg" id="file-msg"></div>
+    <div class="oauth-msg" id="activate-msg"></div>
+
+    <div class="clients-section" id="clients-section">
+      <strong>Clients</strong>
+      <div id="client-list" style="margin-top:6px;"></div>
     </div>
 
     <div class="oauth-section" id="oauth-section">
@@ -133,8 +146,11 @@
           `<div style="margin-top:6px; word-break:break-all;"><strong>Logs:</strong> ` +
           `${escapeHtml(status.log_dir)} ` +
           `<button class="secondary" style="padding:2px 8px; font-size:0.75rem;" ` +
-          `onclick="openLogs()">Open</button></div>`;
+          `id="btn-open-logs">Open</button></div>`;
         renderAccounts(accounts, status.active_account_id);
+        const logsBtn = $('btn-open-logs');
+        if (logsBtn) logsBtn.onclick = openLogs;
+        renderClients();
       } catch (e) {
         console.error(e);
         $('status-bar').textContent = `Error: ${e}`;
@@ -155,22 +171,28 @@
         list.innerHTML = '<div class="empty">No accounts yet. Add one via OAuth or paste a refresh token.</div>';
         return;
       }
+      const CLIENT_SHORT = { agy_cli: 'CLI', classic: 'Antigravity', ide: 'IDE' };
+      const CLIENT_TARGETS = [
+        ['agy_cli', '→ CLI', 'Switch this account into the agy CLI (keyring)'],
+        ['classic', '→ Antigravity', 'Switch this account into Antigravity (classic)'],
+        ['ide', '→ IDE', 'Switch this account into Antigravity IDE'],
+      ];
       list.innerHTML = accounts.map(a => `
-        <div class="account-card ${a.is_active ? 'active' : ''}" data-id="${a.id}">
+        <div class="account-card ${a.active_in.length ? 'active' : ''}" data-id="${a.id}">
           <div class="account-info">
             <div class="email">${escapeHtml(a.email)}</div>
             <div class="meta">
               ${a.access_token_valid
                 ? '<span class="badge ok">token valid</span>'
                 : '<span class="badge invalid">expired</span>'}
+              ${a.active_in.map(k => `<span class="badge active">${CLIENT_SHORT[k]}</span>`).join(' ')}
               &nbsp;Last used: ${fmtTs(a.last_used)}
             </div>
           </div>
-          <div style="display:flex; gap:6px; align-items:center;">
-            ${a.is_active
-              ? '<span class="badge active">active</span>'
-              : `<button class="secondary" onclick="activate('${a.id}')">Activate</button>`}
-            <button class="danger" onclick="removeAccount('${a.id}')">Remove</button>
+          <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
+            ${CLIENT_TARGETS.map(([k, label, tip]) =>
+              `<button class="secondary" style="padding:4px 8px; font-size:0.75rem;" title="${tip}" data-action="activate" data-target="${k}" data-id="${a.id}">${label}</button>`).join('')}
+            <button class="danger" data-action="remove" data-id="${a.id}">Remove</button>
           </div>
         </div>
       `).join('');
@@ -182,13 +204,37 @@
       return div.innerHTML;
     }
 
-    // ── activate ──────────────────────────────────────────────────────────
-    async function activate(id) {
+    // ── clients ─────────────────────────────────────────────────────────
+    async function renderClients() {
       try {
-        await invoke('set_active_account', { id });
+        const clients = await invoke('list_clients');
+        $('client-list').innerHTML = clients.map(c => `
+          <div class="client-row">
+            <span>${escapeHtml(c.name)}${c.current_email ? ' — ' + escapeHtml(c.current_email) : ''}</span>
+            <span class="client-badge ${c.installed ? '' : 'off'}">${c.installed ? 'installed' : 'not installed'}</span>
+          </div>`).join('');
+      } catch (e) { /* non-fatal */ }
+    }
+
+    // ── activate ──────────────────────────────────────────────────────────
+    async function activate(id, target) {
+      const msg = $('activate-msg');
+      msg.className = 'oauth-msg pending';
+      msg.textContent = 'Switching account…';
+      try {
+        const r = await invoke('set_active_account', { id, target });
+        const c = r.clients[0];
+        if (c.ok) {
+          msg.className = 'oauth-msg success';
+          msg.textContent = `Switched ${r.email} into ${c.name} ✓`;
+        } else {
+          msg.className = 'oauth-msg error';
+          msg.textContent = `Failed to switch ${r.email} into ${c.name}: ${c.detail}`;
+        }
         refresh();
       } catch (e) {
-        alert('Failed to activate: ' + e);
+        msg.className = 'oauth-msg error';
+        msg.textContent = 'Failed to activate: ' + e;
       }
     }
 
@@ -269,6 +315,30 @@
       }
     }
 
+    // ── file import (Antigravity-Manager compatible) ───────────────
+    async function importFile(event) {
+      const file = event.target.files[0];
+      event.target.value = '';
+      if (!file) return;
+      const msg = $('file-msg');
+      msg.className = 'oauth-msg pending';
+      msg.textContent = `Importing ${file.name}…`;
+      try {
+        const content = await file.text();
+        const s = await invoke('import_accounts_json', { content });
+        msg.className = 'oauth-msg success';
+        msg.textContent =
+          `Imported ${s.imported} account(s)` +
+          (s.skipped_duplicate ? `, skipped ${s.skipped_duplicate} duplicate(s)` : '') +
+          (s.skipped_invalid ? `, skipped ${s.skipped_invalid} invalid` : '') +
+          (s.imported_emails.length ? `: ${s.imported_emails.join(', ')}` : '');
+        refresh();
+      } catch (e) {
+        msg.className = 'oauth-msg error';
+        msg.textContent = 'Import failed: ' + e;
+      }
+    }
+
     // ── export ───────────────────────────────────────────────────────────
     async function exportJson() {
       try {
@@ -295,6 +365,16 @@
       $('import-msg').textContent = '';
     };
     $('btn-export').onclick = exportJson;
+    // NOTE: inline onclick attributes are blocked by the production CSP,
+    // so list buttons use data-action + this delegated listener.
+    $('account-list').addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-action]');
+      if (!btn) return;
+      if (btn.dataset.action === 'activate') activate(btn.dataset.id, btn.dataset.target);
+      if (btn.dataset.action === 'remove') removeAccount(btn.dataset.id);
+    });
+    $('btn-import-file').onclick = () => $('input-import-file').click();
+    $('input-import-file').onchange = importFile;
 
     // initial load
     refresh();

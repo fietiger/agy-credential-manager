@@ -5,8 +5,8 @@
 //! on behalf of the user beyond the initial OAuth refresh.
 
 use crate::error::{AppError, AppResult};
-use crate::modules::logger;
 use crate::models::account::Account;
+use crate::modules::logger;
 
 /// The keyring service and entry used by the agy CLI.
 pub const KEYRING_SERVICE: &str = "antigravity";
@@ -25,12 +25,11 @@ pub fn sync_to_keyring(account: &Account) -> AppResult<()> {
         ),
     );
 
-    let entry = Entry::new(KEYRING_SERVICE, KEYRING_ENTRY)
-        .map_err(|e| {
-            let msg = format!("Failed to open keyring entry: {}", e);
-            logger::log_error("keyring", &msg);
-            AppError::Keyring(msg)
-        })?;
+    let entry = Entry::new(KEYRING_SERVICE, KEYRING_ENTRY).map_err(|e| {
+        let msg = format!("Failed to open keyring entry: {}", e);
+        logger::log_error("keyring", &msg);
+        AppError::Keyring(msg)
+    })?;
 
     entry
         .set_password(&account.token.access_token)
@@ -56,12 +55,11 @@ pub fn sync_to_keyring(account: &Account) -> AppResult<()> {
 pub fn verify_keyring(expected_token: &str) -> AppResult<bool> {
     use keyring::Entry;
 
-    let entry = Entry::new(KEYRING_SERVICE, KEYRING_ENTRY)
-        .map_err(|e| {
-            let msg = format!("Failed to open keyring entry for verification: {}", e);
-            logger::log_warn("keyring", &msg);
-            AppError::Keyring(msg)
-        })?;
+    let entry = Entry::new(KEYRING_SERVICE, KEYRING_ENTRY).map_err(|e| {
+        let msg = format!("Failed to open keyring entry for verification: {}", e);
+        logger::log_warn("keyring", &msg);
+        AppError::Keyring(msg)
+    })?;
 
     match entry.get_password() {
         Ok(stored) => {
@@ -85,21 +83,18 @@ pub fn clear_keyring() -> AppResult<()> {
 
     logger::log_info("keyring", "Clearing keyring entry");
 
-    let entry = Entry::new(KEYRING_SERVICE, KEYRING_ENTRY)
-        .map_err(|e| {
-            let msg = format!("Failed to open keyring entry for clearing: {}", e);
-            logger::log_warn("keyring", &msg);
-            AppError::Keyring(msg)
-        })?;
+    let entry = Entry::new(KEYRING_SERVICE, KEYRING_ENTRY).map_err(|e| {
+        let msg = format!("Failed to open keyring entry for clearing: {}", e);
+        logger::log_warn("keyring", &msg);
+        AppError::Keyring(msg)
+    })?;
 
     if entry.get_password().is_ok() {
-        entry
-            .delete_credential()
-            .map_err(|e| {
-                let msg = format!("Failed to delete keyring entry: {}", e);
-                logger::log_error("keyring", &msg);
-                AppError::Keyring(msg)
-            })?;
+        entry.delete_credential().map_err(|e| {
+            let msg = format!("Failed to delete keyring entry: {}", e);
+            logger::log_error("keyring", &msg);
+            AppError::Keyring(msg)
+        })?;
         logger::log_info("keyring", "Cleared keyring entry");
     } else {
         logger::log_debug("keyring", "Keyring entry was already empty");

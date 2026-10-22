@@ -56,6 +56,13 @@ pub struct AccountIndex {
     /// The currently active account id for the agy CLI.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_agy_account_id: Option<String>,
+    /// The account currently switched into the Antigravity classic app.
+    /// Each client holds its own account independently.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_classic_account_id: Option<String>,
+    /// The account currently switched into Antigravity IDE.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_ide_account_id: Option<String>,
 }
 
 impl AccountIndex {
@@ -64,6 +71,8 @@ impl AccountIndex {
             version: "1.0".to_string(),
             accounts: Vec::new(),
             current_agy_account_id: None,
+            current_classic_account_id: None,
+            current_ide_account_id: None,
         }
     }
 }
@@ -117,4 +126,64 @@ pub struct AccountExportItem {
 pub struct AccountExportResponse {
     pub exported_at: i64,
     pub accounts: Vec<AccountExportItem>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::token::TokenData;
+
+    fn account() -> Account {
+        let token = TokenData::new(
+            "access".into(),
+            "refresh".into(),
+            3600,
+            None,
+            None,
+            None,
+            false,
+            None,
+        );
+        Account::new("id-1".into(), "user@example.com".into(), token)
+    }
+
+    #[test]
+    fn new_account_defaults() {
+        let acc = account();
+        assert_eq!(acc.id, "id-1");
+        assert!(!acc.disabled);
+        assert!(acc.disabled_reason.is_none());
+        assert!(acc.custom_label.is_none());
+        assert_eq!(acc.created_at, acc.last_used);
+    }
+
+    #[test]
+    fn summary_maps_fields() {
+        let acc = account();
+        let s = AccountSummary::from(&acc);
+        assert_eq!(s.id, acc.id);
+        assert_eq!(s.email, "user@example.com");
+        assert_eq!(s.disabled, acc.disabled);
+        assert_eq!(s.created_at, acc.created_at);
+        assert_eq!(s.last_used, acc.last_used);
+    }
+
+    #[test]
+    fn index_defaults() {
+        let idx = AccountIndex::new();
+        assert_eq!(idx.version, "1.0");
+        assert!(idx.accounts.is_empty());
+        assert!(idx.current_agy_account_id.is_none());
+    }
+
+    #[test]
+    fn account_serde_roundtrip() {
+        let acc = account();
+        let json = serde_json::to_string(&acc).unwrap();
+        let back: Account = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.email, "user@example.com");
+        assert_eq!(back.token.refresh_token, "refresh");
+        // optional fields are omitted when None
+        assert!(!json.contains("custom_label"));
+    }
 }

@@ -73,8 +73,17 @@ jobs:
             src-tauri/target/
           key: ${{ runner.os }}-build-${{ hashFiles('src-tauri/Cargo.lock') }}
 
-      - name: Build
-        run: cargo build --release --manifest-path src-tauri/Cargo.toml
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build (Tauri CLI, production)
+        # Plain `cargo build` produces a dev-mode binary that tries to load
+        # http://localhost:1420 at runtime; the Tauri CLI build embeds the UI.
+        run: |
+          npm install -g @tauri-apps/cli@^2
+          tauri build --no-bundle
 
       - name: Collect artifact (Windows)
         if: matrix.os == 'windows-latest'

@@ -22,6 +22,8 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-feature
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 keyring = "3"
+rusqlite = { version = "0.32", features = ["bundled"] }
+base64 = "0.22"
 dirs = "5"
 thiserror = "2"
 url = "2"

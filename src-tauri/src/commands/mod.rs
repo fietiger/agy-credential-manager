@@ -4,6 +4,7 @@ use crate::error::{AppError, AppResult};
 use crate::models::account::{Account, AccountExportResponse};
 use crate::modules::account_store;
 use crate::modules::agy_sync;
+use crate::modules::client_sync;
 use crate::modules::logger;
 use crate::modules::oauth;
 use serde::{Deserialize, Serialize};
@@ -15,7 +16,7 @@ use std::sync::{Arc, Mutex};
 /// Result of a completed OAuth task.
 enum OauthTaskResult {
     Pending,
-    Success(Account),
+    Success(Box<Account>),
     Failed(String),
 }
 
@@ -43,14 +44,22 @@ pub struct AccountView {
     pub access_token_masked: String,
     pub refresh_token_masked: String,
     pub access_token_valid: bool,
+    /// Active in the agy CLI slot (kept for the status bar semantics).
     pub is_active: bool,
+    /// Every client this account is currently switched into.
+    pub active_in: Vec<client_sync::ClientKind>,
 }
 
 impl From<&crate::models::account::Account> for AccountView {
     fn from(acc: &crate::models::account::Account) -> Self {
-        let active = account_store::load_index()
-            .map(|idx| idx.current_agy_account_id.as_deref() == Some(&acc.id))
-            .unwrap_or(false);
+        let (active, active_in) = account_store::load_index()
+            .map(|idx| {
+                (
+                    idx.current_agy_account_id.as_deref() == Some(&acc.id),
+                    account_store::active_clients_for(&idx, &acc.id),
+                )
+            })
+            .unwrap_or((false, Vec::new()));
         Self {
             id: acc.id.clone(),
             email: acc.email.clone(),
@@ -64,6 +73,7 @@ impl From<&crate::models::account::Account> for AccountView {
             refresh_token_masked: acc.token.masked_refresh_token(),
             access_token_valid: acc.token.is_access_token_valid(),
             is_active: active,
+            active_in,
         }
     }
 }
@@ -116,18 +126,136 @@ pub fn delete_account(id: String) -> AppResult<()> {
     Ok(())
 }
 
-/// Activate an account: refresh its token and write it to the keyring.
+/// Switch an account into ONE selected client (`target`).
+///
+/// Each client holds its account independently — the other clients keep
+/// whichever account they already have. The result reports that single
+/// client's outcome.
 #[tauri::command]
-pub async fn set_active_account(id: String) -> AppResult<()> {
-    logger::log_info("cmd", &format!("Activating account id={}", id));
+pub async fn set_active_account(
+    id: String,
+    target: client_sync::ClientKind,
+) -> AppResult<ActivationResult> {
+    logger::log_info(
+        "cmd",
+        &format!("Activating account id={} into client {}", id, target.name()),
+    );
     let mut acc = account_store::get_account_with_refresh(&id).await?;
-    // Write to keyring
-    agy_sync::sync_to_keyring(&acc)?;
-    // Update index
-    acc.update_last_used();
-    account_store::set_active_account(&id)?;
-    logger::log_info("cmd", &format!("Account {} activated and synced to keyring", id));
-    Ok(())
+
+    let result = match target {
+        client_sync::ClientKind::AgyCli => {
+            // agy CLI: write the access token to the OS keyring and read
+            // it back to verify. Failures are reported as this client's
+            // result rather than aborting the command.
+            match agy_sync::sync_to_keyring(&acc) {
+                Ok(()) => match agy_sync::verify_keyring(&acc.token.access_token) {
+                    Ok(true) => client_sync::ClientSyncResult {
+                        client: target,
+                        name: target.name().to_string(),
+                        ok: true,
+                        detail: format!(
+                            "keyring {}/{} synced + verified",
+                            agy_sync::KEYRING_SERVICE,
+                            agy_sync::KEYRING_ENTRY
+                        ),
+                    },
+                    Ok(false) => client_sync::ClientSyncResult {
+                        client: target,
+                        name: target.name().to_string(),
+                        ok: false,
+                        detail: "keyring verification failed: stored token does not match"
+                            .to_string(),
+                    },
+                    Err(e) => {
+                        logger::log_warn(
+                            "cmd",
+                            &format!("Keyring verification could not be performed: {}", e),
+                        );
+                        client_sync::ClientSyncResult {
+                            client: target,
+                            name: target.name().to_string(),
+                            ok: true,
+                            detail: format!(
+                                "keyring {}/{} synced (verify unavailable)",
+                                agy_sync::KEYRING_SERVICE,
+                                agy_sync::KEYRING_ENTRY
+                            ),
+                        }
+                    }
+                },
+                Err(e) => client_sync::ClientSyncResult {
+                    client: target,
+                    name: target.name().to_string(),
+                    ok: false,
+                    detail: format!("keyring sync failed: {}", e),
+                },
+            }
+        }
+        client_sync::ClientKind::Classic | client_sync::ClientKind::Ide => {
+            client_sync::sync_client_db(target, &acc)
+        }
+    };
+
+    if result.ok {
+        acc.update_last_used();
+        account_store::set_client_account(&id, target)?;
+    }
+    logger::log_info(
+        "cmd",
+        &format!("client {}: ok={} {}", result.name, result.ok, result.detail),
+    );
+    Ok(ActivationResult {
+        account_id: id,
+        email: acc.email.clone(),
+        clients: vec![result],
+    })
+}
+
+/// Result of activating an account: which clients received it.
+#[derive(serde::Serialize)]
+pub struct ActivationResult {
+    pub account_id: String,
+    pub email: String,
+    pub clients: Vec<client_sync::ClientSyncResult>,
+}
+
+/// Detect installed Antigravity clients and the account each one is
+/// currently signed in with.
+#[tauri::command]
+pub fn list_clients() -> AppResult<Vec<client_sync::ClientStatus>> {
+    let mut out = Vec::new();
+
+    // agy CLI: sign-in state is the keyring token, which this app syncs
+    // from the active account, so report the active account's email.
+    let idx = account_store::load_index()?;
+    let cli_email = idx
+        .current_agy_account_id
+        .as_ref()
+        .and_then(|id| account_store::get_account(id).ok())
+        .map(|a| a.email);
+    out.push(client_sync::ClientStatus {
+        client: client_sync::ClientKind::AgyCli,
+        name: client_sync::ClientKind::AgyCli.name().to_string(),
+        installed: client_sync::agy_cli_on_path(),
+        db_path: None,
+        current_email: cli_email,
+    });
+
+    for kind in [
+        client_sync::ClientKind::Classic,
+        client_sync::ClientKind::Ide,
+    ] {
+        let db_path = client_sync::installed_db_path(kind);
+        let current_email = db_path.as_ref().and_then(client_sync::read_client_email);
+        out.push(client_sync::ClientStatus {
+            client: kind,
+            name: kind.name().to_string(),
+            installed: db_path.is_some(),
+            db_path: db_path.map(|p| p.to_string_lossy().to_string()),
+            current_email,
+        });
+    }
+    Ok(out)
 }
 
 /// Start the OAuth flow.
@@ -137,8 +265,8 @@ pub async fn set_active_account(id: String) -> AppResult<()> {
 pub async fn start_oauth() -> AppResult<OauthStartResponse> {
     // Pick a random available port
     use std::net::TcpListener as StdTcpListener;
-    let listener = StdTcpListener::bind("127.0.0.1:0")
-        .map_err(|e| AppError::Other(e.to_string()))?;
+    let listener =
+        StdTcpListener::bind("127.0.0.1:0").map_err(|e| AppError::Other(e.to_string()))?;
     let port = listener
         .local_addr()
         .map_err(|e| AppError::Other(e.to_string()))?
@@ -147,16 +275,16 @@ pub async fn start_oauth() -> AppResult<OauthStartResponse> {
 
     // Register as pending
     {
-        let mut tasks = oauth_tasks().lock().map_err(|_| AppError::Other("lock poisoned".into()))?;
+        let mut tasks = oauth_tasks()
+            .lock()
+            .map_err(|_| AppError::Other("lock poisoned".into()))?;
         tasks.insert(port, OauthTaskResult::Pending);
     }
 
     // Spawn the OAuth flow
     let _oauth_task = tokio::spawn(async move {
         let result = oauth::start_oauth_flow(port).await;
-        let mut tasks = oauth_tasks()
-            .lock()
-            .expect("oauth_tasks lock poisoned");
+        let mut tasks = oauth_tasks().lock().expect("oauth_tasks lock poisoned");
         match result {
             Ok(oauth_result) => {
                 let email = oauth_result
@@ -167,7 +295,7 @@ pub async fn start_oauth() -> AppResult<OauthStartResponse> {
                 let account = Account::new(id, email, oauth_result.token);
                 match account_store::add_account(account.clone()) {
                     Ok(_) => {
-                        tasks.insert(port, OauthTaskResult::Success(account));
+                        tasks.insert(port, OauthTaskResult::Success(Box::new(account)));
                     }
                     Err(e) => {
                         tasks.insert(port, OauthTaskResult::Failed(e.to_string()));
@@ -201,15 +329,13 @@ pub fn poll_oauth(port: u16) -> AppResult<OauthPollResponse> {
             error: None,
             account_id: None,
         }),
-        Some(OauthTaskResult::Success(account)) => {
-            Ok(OauthPollResponse {
-                done: true,
-                success: true,
-                message: format!("Successfully added account: {}", account.email),
-                error: None,
-                account_id: Some(account.id.clone()),
-            })
-        }
+        Some(OauthTaskResult::Success(account)) => Ok(OauthPollResponse {
+            done: true,
+            success: true,
+            message: format!("Successfully added account: {}", account.email),
+            error: None,
+            account_id: Some(account.id.clone()),
+        }),
         Some(OauthTaskResult::Failed(msg)) => Ok(OauthPollResponse {
             done: true,
             success: false,
@@ -243,6 +369,15 @@ pub fn import_refresh_token(
         None,
     )?;
     Ok(AccountView::from(&acc))
+}
+
+/// Import accounts from an export file's JSON contents.
+/// Compatible with Antigravity-Manager exports (a bare array of
+/// `{email, refresh_token}`) and this app's own export format.
+#[tauri::command]
+pub fn import_accounts_json(content: String) -> AppResult<account_store::ImportSummary> {
+    logger::log_info("cmd", "Importing accounts from JSON file content");
+    account_store::import_accounts(&content)
 }
 
 /// Get app status.
@@ -300,5 +435,3 @@ pub struct OauthPollResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account_id: Option<String>,
 }
-
-

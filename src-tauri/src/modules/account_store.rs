@@ -11,9 +11,12 @@
 //! read/write operation.
 
 use crate::error::{AppError, AppResult};
-use crate::modules::logger;
-use crate::models::account::{Account, AccountExportItem, AccountExportResponse, AccountIndex, AccountSummary};
+use crate::models::account::{
+    Account, AccountExportItem, AccountExportResponse, AccountIndex, AccountSummary,
+};
 use crate::models::token::TokenData;
+use crate::modules::client_sync::ClientKind;
+use crate::modules::logger;
 use std::path::PathBuf;
 use std::sync::RwLock;
 
@@ -45,7 +48,9 @@ fn account_file(id: &str) -> AppResult<PathBuf> {
 
 /// Read the index, creating it if it does not exist.
 pub fn load_index() -> AppResult<AccountIndex> {
-    let _guard = STORE_LOCK.read().map_err(|_| AppError::Other("store lock poisoned".into()))?;
+    let _guard = STORE_LOCK
+        .read()
+        .map_err(|_| AppError::Other("store lock poisoned".into()))?;
     let path = index_path()?;
     if !path.exists() {
         let idx = AccountIndex::new();
@@ -68,7 +73,9 @@ fn save_index(idx: &AccountIndex) -> AppResult<()> {
 
 /// Atomically read-modify-write the index.
 pub fn update_index<F: FnOnce(&mut AccountIndex)>(f: F) -> AppResult<()> {
-    let guard = STORE_LOCK.write().map_err(|_| AppError::Other("store lock poisoned".into()))?;
+    let guard = STORE_LOCK
+        .write()
+        .map_err(|_| AppError::Other("store lock poisoned".into()))?;
     let _ = &guard; // hold for the whole operation
     let mut idx = load_index_unlocked()?;
     f(&mut idx);
@@ -89,10 +96,7 @@ fn load_index_unlocked() -> AppResult<AccountIndex> {
 pub fn add_account(account: Account) -> AppResult<()> {
     logger::log_info(
         "store",
-        &format!(
-            "Adding account id={} email={}",
-            account.id, account.email
-        ),
+        &format!("Adding account id={} email={}", account.id, account.email),
     );
     // Check for duplicate email
     let idx = load_index()?;
@@ -142,6 +146,12 @@ pub fn delete_account(id: &str) -> AppResult<()> {
         if idx.current_agy_account_id.as_deref() == Some(id) {
             idx.current_agy_account_id = None;
         }
+        if idx.current_classic_account_id.as_deref() == Some(id) {
+            idx.current_classic_account_id = None;
+        }
+        if idx.current_ide_account_id.as_deref() == Some(id) {
+            idx.current_ide_account_id = None;
+        }
     })?;
 
     logger::log_info("store", &format!("Account {} deleted", id));
@@ -158,36 +168,48 @@ pub fn get_account(id: &str) -> AppResult<Account> {
     Ok(serde_json::from_str(&raw)?)
 }
 
-/// List all accounts (summaries from the index).
-pub fn list_accounts() -> AppResult<Vec<AccountSummary>> {
-    let idx = load_index()?;
-    Ok(idx.accounts)
-}
-
-/// Read a full account, or refresh its access token if expired.
+/// Read a full account, refreshing its access token when expired or
+/// missing. Accounts imported from a file carry no access token; for
+/// those, a failed best-effort refresh (offline, bad test token, ...)
+/// only logs a warning — activation continues with the stored refresh
+/// token, which the desktop clients can exchange on their own.
 pub async fn get_account_with_refresh(id: &str) -> AppResult<Account> {
     let mut account = get_account(id)?;
-    if !account.token.is_access_token_valid() {
+    let expired = !account.token.is_access_token_valid();
+    let missing = account.token.access_token.is_empty();
+    if expired || missing {
         logger::log_info(
             "store",
             &format!(
-                "Access token for {} expired, refreshing via refresh_token",
+                "Access token for {} expired or missing, refreshing via refresh_token",
                 account.email
             ),
         );
-        account.token = crate::modules::oauth::refresh_token(&account.token)
-            .await
-            .map_err(|e| {
-                AppError::Other(format!(
+        match crate::modules::oauth::refresh_token(&account.token).await {
+            Ok(new_token) => {
+                account.token = new_token;
+                // persist the refreshed token
+                let path = account_file(&account.id)?;
+                let raw = serde_json::to_string_pretty(&account)?;
+                std::fs::write(&path, raw)?;
+                logger::log_info("store", &format!("Refreshed token for {}", account.email));
+            }
+            Err(e) if missing && !expired => {
+                logger::log_warn(
+                    "store",
+                    &format!(
+                        "Best-effort refresh for {} failed ({}); continuing with stored token",
+                        account.email, e
+                    ),
+                );
+            }
+            Err(e) => {
+                return Err(AppError::Other(format!(
                     "Failed to refresh access token: {} (account may have been revoked)",
                     e
-                ))
-            })?;
-        // persist the refreshed token
-        let path = account_file(&account.id)?;
-        let raw = serde_json::to_string_pretty(&account)?;
-        std::fs::write(&path, raw)?;
-        logger::log_info("store", &format!("Refreshed token for {}", account.email));
+                )));
+            }
+        }
     } else {
         logger::log_debug(
             "store",
@@ -199,13 +221,32 @@ pub async fn get_account_with_refresh(id: &str) -> AppResult<Account> {
 }
 
 /// Set the active account id in the index.
-pub fn set_active_account(id: &str) -> AppResult<()> {
+/// Record `id` as the current account of ONE client. Each client holds
+/// its account independently; other clients' slots are untouched.
+pub fn set_client_account(id: &str, client: ClientKind) -> AppResult<()> {
     // Validate the account exists
     get_account(id)?;
-    update_index(|idx| {
-        idx.current_agy_account_id = Some(id.to_string());
+    update_index(|idx| match client {
+        ClientKind::AgyCli => idx.current_agy_account_id = Some(id.to_string()),
+        ClientKind::Classic => idx.current_classic_account_id = Some(id.to_string()),
+        ClientKind::Ide => idx.current_ide_account_id = Some(id.to_string()),
     })?;
     Ok(())
+}
+
+/// The clients whose current-account slot holds `id`.
+pub fn active_clients_for(idx: &AccountIndex, id: &str) -> Vec<ClientKind> {
+    let mut out = Vec::new();
+    if idx.current_agy_account_id.as_deref() == Some(id) {
+        out.push(ClientKind::AgyCli);
+    }
+    if idx.current_classic_account_id.as_deref() == Some(id) {
+        out.push(ClientKind::Classic);
+    }
+    if idx.current_ide_account_id.as_deref() == Some(id) {
+        out.push(ClientKind::Ide);
+    }
+    out
 }
 
 /// Export all accounts for backup / migration.
@@ -240,19 +281,16 @@ pub fn import_from_refresh_token(
     project_id: Option<String>,
     session_id: Option<String>,
 ) -> AppResult<Account> {
-    let token = TokenData {
-        access_token: access_token.unwrap_or_default(),
-        refresh_token: refresh_token.to_string(),
-        expires_in: expires_in.unwrap_or(3600),
-        expiry_timestamp: chrono::Utc::now().timestamp() + expires_in.unwrap_or(3600),
-        token_type: "Bearer".to_string(),
-        email: None,
+    let token = TokenData::new(
+        access_token.unwrap_or_default(),
+        refresh_token.to_string(),
+        expires_in.unwrap_or(3600),
+        None,
         project_id,
-        oauth_client_key: None,
         session_id,
-        is_gcp_tos: false,
-        id_token: None,
-    };
+        false,
+        None,
+    );
 
     let email = extract_email_from_token(&token)?;
     let id = uuid::Uuid::new_v4().to_string();
@@ -270,4 +308,239 @@ fn extract_email_from_token(token: &TokenData) -> AppResult<String> {
         }
     }
     Ok(String::from("unknown"))
+}
+
+// ── Bulk import (Antigravity-Manager compatible) ────────────────────────
+
+/// One parsed entry from an import file.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportEntry {
+    pub email: Option<String>,
+    pub refresh_token: String,
+}
+
+/// Result of parsing an import file.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedImport {
+    pub entries: Vec<ImportEntry>,
+    pub skipped_invalid: usize,
+}
+
+/// Summary of a bulk import, returned to the frontend.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ImportSummary {
+    pub imported: usize,
+    pub skipped_invalid: usize,
+    pub skipped_duplicate: usize,
+    pub imported_emails: Vec<String>,
+}
+
+/// Parse the contents of an accounts export file.
+///
+/// Accepts both shapes:
+/// - Antigravity-Manager export: a bare array
+///   `[{"email": "...", "refresh_token": "1//..."}, ...]`
+/// - This app's own export: `{"accounts": [ ... ]}` (extra fields ignored)
+///
+/// Entries whose refresh_token is missing or does not start with
+/// `1//` or `4/` are counted as invalid and skipped.
+pub fn parse_import_entries(content: &str) -> AppResult<ParsedImport> {
+    let value: serde_json::Value = serde_json::from_str(content)
+        .map_err(|e| AppError::Validation(format!("Invalid JSON: {}", e)))?;
+    let items: &Vec<serde_json::Value> = match &value {
+        serde_json::Value::Array(arr) => arr,
+        serde_json::Value::Object(obj) => match obj.get("accounts") {
+            Some(serde_json::Value::Array(arr)) => arr,
+            _ => {
+                return Err(AppError::Validation(
+                    "Unrecognized import format: expected an array or an object with an \"accounts\" array"
+                        .to_string(),
+                ))
+            }
+        },
+        _ => {
+            return Err(AppError::Validation(
+                "Unrecognized import format: expected a JSON array".to_string(),
+            ))
+        }
+    };
+
+    let mut entries = Vec::new();
+    let mut skipped_invalid = 0usize;
+    for item in items {
+        let token = item
+            .get("refresh_token")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        if !(token.starts_with("1//") || token.starts_with("4/")) {
+            skipped_invalid += 1;
+            continue;
+        }
+        let email = item
+            .get("email")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        entries.push(ImportEntry {
+            email,
+            refresh_token: token.to_string(),
+        });
+    }
+    Ok(ParsedImport {
+        entries,
+        skipped_invalid,
+    })
+}
+
+/// Import all valid accounts from an export file's contents.
+/// Duplicates (same email or same refresh token as an existing account)
+/// are skipped and counted, not treated as errors.
+pub fn import_accounts(content: &str) -> AppResult<ImportSummary> {
+    let parsed = parse_import_entries(content)?;
+    if parsed.entries.is_empty() {
+        return Err(AppError::Validation(
+            "No valid accounts found in the import file".to_string(),
+        ));
+    }
+
+    // Snapshot existing refresh tokens for duplicate detection
+    let idx = load_index()?;
+    let mut seen_tokens: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for summary in &idx.accounts {
+        if let Ok(acc) = get_account(&summary.id) {
+            seen_tokens.insert(acc.token.refresh_token);
+        }
+    }
+
+    let mut summary = ImportSummary {
+        imported: 0,
+        skipped_invalid: parsed.skipped_invalid,
+        skipped_duplicate: 0,
+        imported_emails: Vec::new(),
+    };
+
+    for entry in parsed.entries {
+        if !seen_tokens.insert(entry.refresh_token.clone()) {
+            summary.skipped_duplicate += 1;
+            continue;
+        }
+        let email = entry.email.clone().unwrap_or_else(|| "unknown".to_string());
+        let token = TokenData::new(
+            String::new(),
+            entry.refresh_token.clone(),
+            3600,
+            entry.email.clone(),
+            None,
+            None,
+            false,
+            None,
+        );
+        let account = Account::new(uuid::Uuid::new_v4().to_string(), email.clone(), token);
+        match add_account(account) {
+            Ok(()) => {
+                summary.imported += 1;
+                summary.imported_emails.push(email);
+            }
+            Err(AppError::AccountExists(_)) => {
+                summary.skipped_duplicate += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    logger::log_info(
+        "store",
+        &format!(
+            "Bulk import finished: imported={} invalid={} duplicate={}",
+            summary.imported, summary.skipped_invalid, summary.skipped_duplicate
+        ),
+    );
+    Ok(summary)
+}
+
+#[cfg(test)]
+mod import_tests {
+    use super::*;
+
+    #[test]
+    fn parses_antigravity_manager_bare_array() {
+        let content = r#"[
+            {"email": "alice@example.com", "refresh_token": "1//aaa"},
+            {"email": "bob@example.com", "refresh_token": "1//bbb"}
+        ]"#;
+        let parsed = parse_import_entries(content).unwrap();
+        assert_eq!(parsed.skipped_invalid, 0);
+        assert_eq!(parsed.entries.len(), 2);
+        assert_eq!(
+            parsed.entries[0].email.as_deref(),
+            Some("alice@example.com")
+        );
+        assert_eq!(parsed.entries[1].refresh_token, "1//bbb");
+    }
+
+    #[test]
+    fn parses_own_export_wrapped_format() {
+        let content = r#"{
+            "exported_at": 1792660464,
+            "accounts": [
+                {"email": "carol@example.com", "refresh_token": "4/ccc", "access_token": "x", "expires_in": 3600}
+            ]
+        }"#;
+        let parsed = parse_import_entries(content).unwrap();
+        assert_eq!(parsed.entries.len(), 1);
+        assert_eq!(parsed.entries[0].refresh_token, "4/ccc");
+    }
+
+    #[test]
+    fn filters_invalid_entries() {
+        let content = r#"[
+            {"email": "ok@example.com", "refresh_token": "1//good"},
+            {"email": "no-token@example.com"},
+            {"email": "bad@example.com", "refresh_token": "not-a-token"},
+            {"refresh_token": "1//no-email"}
+        ]"#;
+        let parsed = parse_import_entries(content).unwrap();
+        assert_eq!(parsed.entries.len(), 2);
+        assert_eq!(parsed.skipped_invalid, 2);
+        assert_eq!(parsed.entries[1].email, None);
+    }
+
+    #[test]
+    fn rejects_unrecognized_formats() {
+        assert!(parse_import_entries("not json").is_err());
+        assert!(parse_import_entries(r#"{"foo": 1}"#).is_err());
+        assert!(parse_import_entries(r#""just a string""#).is_err());
+        let empty = parse_import_entries("[]").unwrap();
+        assert!(empty.entries.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod slot_tests {
+    use super::*;
+
+    #[test]
+    fn active_clients_reflect_independent_slots() {
+        let mut idx = AccountIndex::new();
+        idx.current_agy_account_id = Some("a".to_string());
+        idx.current_ide_account_id = Some("a".to_string());
+        idx.current_classic_account_id = Some("b".to_string());
+        assert_eq!(
+            active_clients_for(&idx, "a"),
+            vec![ClientKind::AgyCli, ClientKind::Ide]
+        );
+        assert_eq!(active_clients_for(&idx, "b"), vec![ClientKind::Classic]);
+        assert!(active_clients_for(&idx, "nobody").is_empty());
+    }
+
+    #[test]
+    fn old_index_format_loads_with_empty_new_slots() {
+        // accounts.json written before per-client slots existed
+        let raw = r#"{"version":"1.0","accounts":[],"current_agy_account_id":"x"}"#;
+        let idx: AccountIndex = serde_json::from_str(raw).unwrap();
+        assert_eq!(idx.current_agy_account_id.as_deref(), Some("x"));
+        assert!(idx.current_classic_account_id.is_none());
+        assert!(idx.current_ide_account_id.is_none());
+    }
 }
