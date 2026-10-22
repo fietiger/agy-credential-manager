@@ -70,7 +70,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 调试日志：设置环境变量 `AGY_LOG_DEBUG=1` 后再启动应用，可输出 debug 级别日志。
 
-OAuth 客户端密钥：Antigravity 用的是「已安装应用」类型的 OAuth 客户端，换取 token 时只需 client id，不需要密钥。如果换成其他类型的客户端、需要带 client secret，用环境变量 `AGY_OAUTH_CLIENT_SECRET` 提供，不要把密钥写进源码（GitHub 的推送保护会直接拒绝含密钥的提交）。
+OAuth 客户端密钥：这个 OAuth 客户端在换取 token 时**要求**带 `client_secret`，不带会直接返回 `invalid_request: client_secret is missing.`（已实测）。源码里内置的是 Google 官方发行版内嵌的公开值，不是个人凭据；GitHub 的 secret scanning 可能把它判成泄露，推送/合并时按 false positive 放行即可。
 
 ## 项目结构
 
