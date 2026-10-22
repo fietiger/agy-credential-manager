@@ -108,6 +108,12 @@
         Recommended: this opens your default browser to sign in with Google
         and authorize. The token is then fetched and saved automatically.
       </div>
+      <div class="oauth-desc">
+        Note: the browser uses whichever Google account is signed in there. If it shows
+        <code>invalid_scope</code>, <code>access_denied</code> or "service has been disabled in this
+        account", that account is restricted by Google — sign in with another account (or use a
+        private window) and try again.
+      </div>
       <button class="oauth-primary" id="btn-oauth-start">Start OAuth authorization</button>
       <div class="oauth-link-label">Authorization link</div>
       <div class="oauth-link-row">

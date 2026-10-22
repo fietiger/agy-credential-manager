@@ -275,7 +275,7 @@ fn spawn_callback_listener(
 pub async fn wait_for_oauth(open_browser: bool) -> AppResult<OAuthResult> {
     let auth_url = prepare_oauth().await?;
     if open_browser {
-        if let Err(e) = open(&auth_url) {
+        if let Err(e) = open_in_browser(&auth_url) {
             logger::log_warn(
                 "oauth",
                 &format!("Could not open browser: {}. Auth URL: {}", e, auth_url),
@@ -575,26 +575,48 @@ pub async fn refresh_token(token: &TokenData) -> Result<TokenData, String> {
     Ok(build_token(raw, email, Some(token)))
 }
 
-/// Open a URL in the default browser (best effort).
-fn open(url: &str) -> std::io::Result<()> {
+/// Open a URL in the default browser.
+///
+/// Deliberately does **not** go through `cmd /C start`: cmd.exe treats `&` as
+/// a command separator, so an OAuth URL gets truncated at its first `&` and
+/// Google answers "Required parameter is missing: response_type". `explorer`
+/// receives the URL as a single argument, and the other platforms' openers do
+/// the same, so the query string survives intact. (Adopted from upstream's
+/// Windows fix; previously this module used `cmd /C start`.)
+pub fn open_in_browser(url: &str) -> std::io::Result<()> {
     if url.is_empty() {
         return Ok(());
     }
-    let mut cmd = if cfg!(target_os = "macos") {
-        let mut c = std::process::Command::new("open");
-        c.arg(url);
-        c
-    } else if cfg!(target_os = "windows") {
-        let mut c = std::process::Command::new("cmd");
-        c.args(["/C", "start", "", url]);
-        c
-    } else {
-        let mut c = std::process::Command::new("xdg-open");
-        c.arg(url);
-        c
-    };
-    cmd.spawn()?;
-    Ok(())
+    logger::log_info("oauth", &format!("Opening in browser: {}", url));
+    open_impl(url)
+}
+
+/// Windows: `explorer` only hands the URL to the browser when it arrives as a
+/// single quoted argument — without the quotes it silently drops it. `raw_arg`
+/// lets us write the quotes ourselves instead of `Command` escaping them.
+#[cfg(target_os = "windows")]
+fn open_impl(url: &str) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    std::process::Command::new("explorer")
+        .raw_arg(format!("\"{}\"", url))
+        .spawn()
+        .map(|_| ())
+}
+
+#[cfg(target_os = "macos")]
+fn open_impl(url: &str) -> std::io::Result<()> {
+    std::process::Command::new("open")
+        .arg(url)
+        .spawn()
+        .map(|_| ())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn open_impl(url: &str) -> std::io::Result<()> {
+    std::process::Command::new("xdg-open")
+        .arg(url)
+        .spawn()
+        .map(|_| ())
 }
 
 #[cfg(test)]
