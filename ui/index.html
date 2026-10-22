@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agy Credential Manager</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #1a1a2e; color: #eee; min-height: 100vh; }
+    .container { max-width: 720px; margin: 0 auto; padding: 24px; }
+    h1 { font-size: 1.4rem; margin-bottom: 4px; color: #fff; }
+    .subtitle { color: #888; font-size: 0.85rem; margin-bottom: 24px; }
+    .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; }
+    button {
+      background: #4f46e5; color: #fff; border: none; border-radius: 6px;
+      padding: 8px 16px; font-size: 0.85rem; cursor: pointer; transition: background 0.15s;
+    }
+    button:hover { background: #6366f1; }
+    button.secondary { background: #374151; }
+    button.secondary:hover { background: #4b5563; }
+    button.danger { background: #dc2626; }
+    button.danger:hover { background: #ef4444; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .account-card {
+      background: #16213e; border: 1px solid #0f3460; border-radius: 8px;
+      padding: 16px; margin-bottom: 12px; display: flex; align-items: center; gap: 12px;
+    }
+    .account-card.active { border-color: #4f46e5; box-shadow: 0 0 0 1px #4f46e5; }
+    .account-info { flex: 1; }
+    .email { font-weight: 600; font-size: 0.95rem; }
+    .meta { color: #888; font-size: 0.75rem; margin-top: 4px; }
+    .badge { font-size: 0.7rem; padding: 2px 8px; border-radius: 4px; }
+    .badge.active { background: #4f46e5; color: #fff; }
+    .badge.invalid { background: #dc2626; color: #fff; }
+    .badge.ok { background: #16a34a; color: #fff; }
+    .status-bar {
+      background: #16213e; border: 1px solid #0f3460; border-radius: 8px;
+      padding: 12px 16px; margin-bottom: 20px; font-size: 0.8rem; color: #aaa;
+    }
+    .status-bar strong { color: #ccc; }
+    .oauth-section {
+      background: #16213e; border: 1px solid #0f3460; border-radius: 8px;
+      padding: 16px; margin-bottom: 20px; display: none;
+    }
+    .oauth-section.show { display: block; }
+    .oauth-url {
+      background: #0f3460; border-radius: 6px; padding: 10px;
+      font-size: 0.75rem; word-break: break-all; color: #94a3b8;
+      margin-top: 8px; cursor: pointer;
+    }
+    .oauth-msg { margin-top: 10px; font-size: 0.85rem; }
+    .oauth-msg.success { color: #4ade80; }
+    .oauth-msg.error { color: #f87171; }
+    .oauth-msg.pending { color: #facc15; }
+    .import-section {
+      background: #16213e; border: 1px solid #0f3460; border-radius: 8px;
+      padding: 16px; margin-bottom: 20px; display: none;
+    }
+    .import-section.show { display: block; }
+    .import-section input {
+      width: 100%; background: #0f3460; border: 1px solid #1e40af;
+      border-radius: 6px; padding: 8px; color: #eee; font-size: 0.85rem;
+      margin-top: 8px;
+    }
+    .empty { text-align: center; color: #555; padding: 40px; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Agy Credential Manager</h1>
+    <div class="subtitle">Local-only credential store. No proxy. No relay.</div>
+
+    <div class="status-bar" id="status-bar">Loading…</div>
+
+    <div class="btn-row">
+      <button id="btn-add-oauth">Add via OAuth</button>
+      <button class="secondary" id="btn-add-manual">Add Refresh Token</button>
+      <button class="secondary" id="btn-export">Export JSON</button>
+    </div>
+
+    <div class="oauth-section" id="oauth-section">
+      <strong>OAuth in progress</strong>
+      <div style="margin-top:8px; font-size:0.8rem; color:#ccc;">
+        Your browser should have opened the Google consent screen. If not, click the URL below:
+      </div>
+      <div class="oauth-url" id="oauth-url"></div>
+      <div class="oauth-msg" id="oauth-msg">Waiting for authorization…</div>
+      <div style="margin-top:10px;">
+        <button class="secondary" id="btn-oauth-cancel">Cancel</button>
+      </div>
+    </div>
+
+    <div class="import-section" id="import-section">
+      <strong>Import refresh token</strong>
+      <div style="margin-top:8px; font-size:0.8rem; color:#ccc;">
+        Paste a Google OAuth refresh token (starts with <code>1/</code> or <code>4/</code>):
+      </div>
+      <input type="text" id="input-rtoken" placeholder="Paste refresh token…" />
+      <div style="margin-top:10px; display:flex; gap:8px;">
+        <button id="btn-import-ok">Import</button>
+        <button class="secondary" id="btn-import-cancel">Cancel</button>
+      </div>
+      <div class="oauth-msg" id="import-msg"></div>
+    </div>
+
+    <div id="account-list"></div>
+  </div>
+
+  <script>
+    const { invoke } = window.__TAURI__.core;
+
+    // ── helpers ────────────────────────────────────────────────────────────
+    const $ = id => document.getElementById(id);
+    let pollTimer = null;
+    let oauthPort = null;
+
+    function fmtTs(ts) {
+      if (!ts) return '—';
+      const d = new Date(ts * 1000);
+      return d.toLocaleString();
+    }
+
+    // ── load accounts ─────────────────────────────────────────────────────
+    async function refresh() {
+      try {
+        const [accounts, status] = await Promise.all([
+          invoke('list_accounts'),
+          invoke('get_status')
+        ]);
+        $('status-bar').innerHTML =
+          `<div><strong>Active:</strong> ${status.active_email || 'none'} &nbsp;·&nbsp; ` +
+          `<strong>Keyring:</strong> ${status.keyring_service}/${status.keyring_entry}</div>` +
+          `<div style="margin-top:6px; word-break:break-all;"><strong>Logs:</strong> ` +
+          `${escapeHtml(status.log_dir)} ` +
+          `<button class="secondary" style="padding:2px 8px; font-size:0.75rem;" ` +
+          `onclick="openLogs()">Open</button></div>`;
+        renderAccounts(accounts, status.active_account_id);
+      } catch (e) {
+        console.error(e);
+        $('status-bar').textContent = `Error: ${e}`;
+      }
+    }
+
+    async function openLogs() {
+      try {
+        await invoke('open_log_dir');
+      } catch (e) {
+        alert('Failed to open log directory: ' + e);
+      }
+    }
+
+    function renderAccounts(accounts, activeId) {
+      const list = $('account-list');
+      if (!accounts.length) {
+        list.innerHTML = '<div class="empty">No accounts yet. Add one via OAuth or paste a refresh token.</div>';
+        return;
+      }
+      list.innerHTML = accounts.map(a => `
+        <div class="account-card ${a.is_active ? 'active' : ''}" data-id="${a.id}">
+          <div class="account-info">
+            <div class="email">${escapeHtml(a.email)}</div>
+            <div class="meta">
+              ${a.access_token_valid
+                ? '<span class="badge ok">token valid</span>'
+                : '<span class="badge invalid">expired</span>'}
+              &nbsp;Last used: ${fmtTs(a.last_used)}
+            </div>
+          </div>
+          <div style="display:flex; gap:6px; align-items:center;">
+            ${a.is_active
+              ? '<span class="badge active">active</span>'
+              : `<button class="secondary" onclick="activate('${a.id}')">Activate</button>`}
+            <button class="danger" onclick="removeAccount('${a.id}')">Remove</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function escapeHtml(s) {
+      const div = document.createElement('div');
+      div.textContent = s;
+      return div.innerHTML;
+    }
+
+    // ── activate ──────────────────────────────────────────────────────────
+    async function activate(id) {
+      try {
+        await invoke('set_active_account', { id });
+        refresh();
+      } catch (e) {
+        alert('Failed to activate: ' + e);
+      }
+    }
+
+    // ── remove ───────────────────────────────────────────────────────────
+    async function removeAccount(id) {
+      if (!confirm('Remove this account?')) return;
+      try {
+        await invoke('delete_account', { id });
+        refresh();
+      } catch (e) {
+        alert('Failed to remove: ' + e);
+      }
+    }
+
+    // ── OAuth flow ────────────────────────────────────────────────────────
+    async function startOAuth() {
+      $('oauth-section').classList.add('show');
+      $('oauth-msg').className = 'oauth-msg pending';
+      $('oauth-msg').textContent = 'Starting OAuth…';
+      try {
+        const res = await invoke('start_oauth');
+        oauthPort = res.port;
+        $('oauth-url').textContent = res.auth_url;
+        $('oauth-url').onclick = () => {
+          window.open(res.auth_url, '_blank');
+        };
+        // poll every 2s
+        clearInterval(pollTimer);
+        pollTimer = setInterval(async () => {
+          const p = await invoke('poll_oauth', { port: oauthPort });
+          if (p.done) {
+            clearInterval(pollTimer);
+            $('oauth-section').classList.remove('show');
+            if (p.success) {
+              alert('Account added: ' + p.message);
+            } else {
+              alert('OAuth failed: ' + (p.error || 'unknown error'));
+            }
+            refresh();
+          }
+        }, 2000);
+      } catch (e) {
+        clearInterval(pollTimer);
+        $('oauth-section').classList.remove('show');
+        alert('Failed to start OAuth: ' + e);
+      }
+    }
+
+    function cancelOAuth() {
+      clearInterval(pollTimer);
+      $('oauth-section').classList.remove('show');
+      refresh();
+    }
+
+    // ── manual import ────────────────────────────────────────────────────
+    async function importManual() {
+      const token = $('input-rtoken').value.trim();
+      if (!token) { alert('Please paste a refresh token first.'); return; }
+      $('import-msg').className = 'oauth-msg pending';
+      $('import-msg').textContent = 'Importing…';
+      try {
+        const acc = await invoke('import_refresh_token', {
+          refreshToken: token,
+          accessToken: null,
+          expiresIn: null,
+          projectId: null,
+        });
+        $('import-msg').className = 'oauth-msg success';
+        $('import-msg').textContent = `Imported: ${acc.email}`;
+        setTimeout(() => {
+          $('import-section').classList.remove('show');
+          $('import-msg').textContent = '';
+          refresh();
+        }, 1500);
+      } catch (e) {
+        $('import-msg').className = 'oauth-msg error';
+        $('import-msg').textContent = 'Import failed: ' + e;
+      }
+    }
+
+    // ── export ───────────────────────────────────────────────────────────
+    async function exportJson() {
+      try {
+        const data = await invoke('export_accounts');
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `agy-credentials-${new Date().toISOString().slice(0,10)}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch (e) {
+        alert('Export failed: ' + e);
+      }
+    }
+
+    // ── wire up buttons ─────────────────────────────────────────────────
+    $('btn-add-oauth').onclick = startOAuth;
+    $('btn-oauth-cancel').onclick = cancelOAuth;
+    $('btn-add-manual').onclick = () => $('import-section').classList.toggle('show');
+    $('btn-import-ok').onclick = importManual;
+    $('btn-import-cancel').onclick = () => {
+      $('import-section').classList.remove('show');
+      $('import-msg').textContent = '';
+    };
+    $('btn-export').onclick = exportJson;
+
+    // initial load
+    refresh();
+  </script>
+</body>
+</html>

@@ -1,0 +1,116 @@
+name: Build & Release
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── 1. Lint（仅提示，不阻断构建）──────────────────────────────────────────
+  lint:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf libssl-dev
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            src-tauri/target/
+          key: ${{ runner.os }}-lint-${{ hashFiles('src-tauri/Cargo.lock') }}
+
+      - name: Format check
+        continue-on-error: true
+        run: cd src-tauri && cargo fmt --all -- --check
+
+      - name: Clippy
+        continue-on-error: true
+        run: cd src-tauri && cargo clippy --all-targets -- -D warnings
+
+  # ── 2. Build（三平台，直接产出可执行文件）────────────────────────────────
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf libssl-dev
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            src-tauri/target/
+          key: ${{ runner.os }}-build-${{ hashFiles('src-tauri/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --manifest-path src-tauri/Cargo.toml
+
+      - name: Collect artifact (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item src-tauri/target/release/agy-credential-manager.exe dist/
+          Get-ChildItem dist
+
+      - name: Collect artifact (Linux/macOS)
+        if: matrix.os != 'windows-latest'
+        run: |
+          mkdir -p dist
+          cp src-tauri/target/release/agy-credential-manager dist/
+          chmod +x dist/agy-credential-manager
+          ls -la dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agy-credential-manager-${{ matrix.os }}
+          path: dist/*
+          if-no-files-found: error
+
+  # ── 3. Release（仅 tag 触发）─────────────────────────────────────────────
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: artifacts/**/*
