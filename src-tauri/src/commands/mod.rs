@@ -263,6 +263,15 @@ pub fn import_refresh_token(
     Ok(AccountView::from(&acc))
 }
 
+/// Import accounts from an export file's JSON contents.
+/// Compatible with Antigravity-Manager exports (a bare array of
+/// `{email, refresh_token}`) and this app's own export format.
+#[tauri::command]
+pub fn import_accounts_json(content: String) -> AppResult<account_store::ImportSummary> {
+    logger::log_info("cmd", "Importing accounts from JSON file content");
+    account_store::import_accounts(&content)
+}
+
 /// Get app status.
 #[tauri::command]
 pub fn get_status() -> AppResult<AppStatus> {

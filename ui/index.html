@@ -76,7 +76,10 @@
       <button id="btn-add-oauth">Add via OAuth</button>
       <button class="secondary" id="btn-add-manual">Add Refresh Token</button>
       <button class="secondary" id="btn-export">Export JSON</button>
+      <button class="secondary" id="btn-import-file">Import JSON</button>
+      <input type="file" id="input-import-file" accept=".json,application/json" style="display:none" />
     </div>
+    <div class="oauth-msg" id="file-msg"></div>
 
     <div class="oauth-section" id="oauth-section">
       <strong>OAuth in progress</strong>
@@ -269,6 +272,30 @@
       }
     }
 
+    // ── file import (Antigravity-Manager compatible) ───────────────
+    async function importFile(event) {
+      const file = event.target.files[0];
+      event.target.value = '';
+      if (!file) return;
+      const msg = $('file-msg');
+      msg.className = 'oauth-msg pending';
+      msg.textContent = `Importing ${file.name}…`;
+      try {
+        const content = await file.text();
+        const s = await invoke('import_accounts_json', { content });
+        msg.className = 'oauth-msg success';
+        msg.textContent =
+          `Imported ${s.imported} account(s)` +
+          (s.skipped_duplicate ? `, skipped ${s.skipped_duplicate} duplicate(s)` : '') +
+          (s.skipped_invalid ? `, skipped ${s.skipped_invalid} invalid` : '') +
+          (s.imported_emails.length ? `: ${s.imported_emails.join(', ')}` : '');
+        refresh();
+      } catch (e) {
+        msg.className = 'oauth-msg error';
+        msg.textContent = 'Import failed: ' + e;
+      }
+    }
+
     // ── export ───────────────────────────────────────────────────────────
     async function exportJson() {
       try {
@@ -295,6 +322,8 @@
       $('import-msg').textContent = '';
     };
     $('btn-export').onclick = exportJson;
+    $('btn-import-file').onclick = () => $('input-import-file').click();
+    $('input-import-file').onchange = importFile;
 
     // initial load
     refresh();
