@@ -479,21 +479,35 @@ pub fn open_in_browser(url: &str) -> std::io::Result<()> {
         return Ok(());
     }
     logger::log_info("oauth", &format!("Opening in browser: {}", url));
+    open_impl(url)
+}
 
-    let mut cmd = if cfg!(target_os = "macos") {
-        let mut c = std::process::Command::new("open");
-        c.arg(url);
-        c
-    } else if cfg!(target_os = "windows") {
-        let mut c = std::process::Command::new("explorer");
-        c.arg(url);
-        c
-    } else {
-        let mut c = std::process::Command::new("xdg-open");
-        c.arg(url);
-        c
-    };
-    cmd.spawn().map(|_| ())
+/// Windows: `explorer` only hands the URL to the browser when it arrives as a
+/// single quoted argument — without the quotes it silently drops it. `raw_arg`
+/// lets us write the quotes ourselves instead of `Command` escaping them.
+#[cfg(target_os = "windows")]
+fn open_impl(url: &str) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    std::process::Command::new("explorer")
+        .raw_arg(format!("\"{}\"", url))
+        .spawn()
+        .map(|_| ())
+}
+
+#[cfg(target_os = "macos")]
+fn open_impl(url: &str) -> std::io::Result<()> {
+    std::process::Command::new("open")
+        .arg(url)
+        .spawn()
+        .map(|_| ())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn open_impl(url: &str) -> std::io::Result<()> {
+    std::process::Command::new("xdg-open")
+        .arg(url)
+        .spawn()
+        .map(|_| ())
 }
 
 /// Extract the authorization code from whatever the user pasted.
