@@ -171,21 +171,27 @@
         list.innerHTML = '<div class="empty">No accounts yet. Add one via OAuth or paste a refresh token.</div>';
         return;
       }
+      const CLIENT_SHORT = { agy_cli: 'CLI', classic: 'Antigravity', ide: 'IDE' };
+      const CLIENT_TARGETS = [
+        ['agy_cli', '→ CLI', 'Switch this account into the agy CLI (keyring)'],
+        ['classic', '→ Antigravity', 'Switch this account into Antigravity (classic)'],
+        ['ide', '→ IDE', 'Switch this account into Antigravity IDE'],
+      ];
       list.innerHTML = accounts.map(a => `
-        <div class="account-card ${a.is_active ? 'active' : ''}" data-id="${a.id}">
+        <div class="account-card ${a.active_in.length ? 'active' : ''}" data-id="${a.id}">
           <div class="account-info">
             <div class="email">${escapeHtml(a.email)}</div>
             <div class="meta">
               ${a.access_token_valid
                 ? '<span class="badge ok">token valid</span>'
                 : '<span class="badge invalid">expired</span>'}
+              ${a.active_in.map(k => `<span class="badge active">${CLIENT_SHORT[k]}</span>`).join(' ')}
               &nbsp;Last used: ${fmtTs(a.last_used)}
             </div>
           </div>
-          <div style="display:flex; gap:6px; align-items:center;">
-            ${a.is_active
-              ? '<span class="badge active">active</span>'
-              : `<button class="secondary" data-action="activate" data-id="${a.id}">Activate</button>`}
+          <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
+            ${CLIENT_TARGETS.map(([k, label, tip]) =>
+              `<button class="secondary" style="padding:4px 8px; font-size:0.75rem;" title="${tip}" data-action="activate" data-target="${k}" data-id="${a.id}">${label}</button>`).join('')}
             <button class="danger" data-action="remove" data-id="${a.id}">Remove</button>
           </div>
         </div>
@@ -211,18 +217,20 @@
     }
 
     // ── activate ──────────────────────────────────────────────────────────
-    async function activate(id) {
+    async function activate(id, target) {
       const msg = $('activate-msg');
       msg.className = 'oauth-msg pending';
       msg.textContent = 'Switching account…';
       try {
-        const r = await invoke('set_active_account', { id });
-        const summary = r.clients.map(c =>
-          c.ok ? `${c.name} ✓`
-               : (c.detail === 'not installed' ? `${c.name} (not installed)` : `${c.name} ✗ ${c.detail}`)
-        ).join(' · ');
-        msg.className = 'oauth-msg success';
-        msg.textContent = `Switched to ${r.email} — ${summary}`;
+        const r = await invoke('set_active_account', { id, target });
+        const c = r.clients[0];
+        if (c.ok) {
+          msg.className = 'oauth-msg success';
+          msg.textContent = `Switched ${r.email} into ${c.name} ✓`;
+        } else {
+          msg.className = 'oauth-msg error';
+          msg.textContent = `Failed to switch ${r.email} into ${c.name}: ${c.detail}`;
+        }
         refresh();
       } catch (e) {
         msg.className = 'oauth-msg error';
@@ -362,7 +370,7 @@
     $('account-list').addEventListener('click', (e) => {
       const btn = e.target.closest('button[data-action]');
       if (!btn) return;
-      if (btn.dataset.action === 'activate') activate(btn.dataset.id);
+      if (btn.dataset.action === 'activate') activate(btn.dataset.id, btn.dataset.target);
       if (btn.dataset.action === 'remove') removeAccount(btn.dataset.id);
     });
     $('btn-import-file').onclick = () => $('input-import-file').click();

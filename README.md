@@ -11,7 +11,7 @@
 - **导入 refresh token**：已有 refresh token 时可直接导入生成账号
 - **文件批量导入**：可直接导入 Antigravity-Manager 导出的 JSON 文件（裸数组 `[{email, refresh_token}]`），也兼容本应用自己的导出格式；自动跳过无效条目与重复账号并报告数量，邮箱取自文件、不会显示 unknown
 - **一键切换账号**：将账号设为活跃时，把它的 access token 写入系统 keyring（service `antigravity` / entry `oauth_token`），agy CLI 下次启动即使用该账号；写入后会读回校验
-- **多客户端切换**：设为活跃账号时同步写入所有已安装的客户端——agy CLI（系统 keyring）、Antigravity 经典版与 Antigravity IDE（各自 `state.vscdb` 的 unified state 格式注入，含 userStatus 与项目偏好）；界面 Clients 区显示每个客户端的安装状态与当前登录邮箱，切换结果逐客户端报告
+- **多客户端切换（逐客户端选择）**：每个账号可分别切入指定客户端——agy CLI（系统 keyring）、Antigravity 经典版、Antigravity IDE（各自 `state.vscdb` 的 unified state 格式注入，含 userStatus 与项目偏好）；每个客户端独立保存自己的当前账号、互不影响（与 Antigravity-Manager 相同的模型）；账号卡上的徽章显示该账号正被哪些客户端使用，界面 Clients 区显示每个客户端的安装状态与当前登录邮箱
 - **自动刷新**：读取账号时若 access token 已过期（提前 60 秒判定），自动用 refresh token 刷新
 - **导出备份**：一键导出全部账号（邮箱 + refresh token 等）为 JSON，便于备份与迁移
 - **文件日志**：结构化日志写入应用数据目录，界面内可直接打开日志目录

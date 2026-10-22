@@ -32,7 +32,7 @@ const SENTINEL_USER_STATUS: &str = "userStatusSentinelKey";
 const SENTINEL_PROJECT: &str = "enterpriseGcpProjectId";
 
 /// A client that can hold the active account.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClientKind {
     AgyCli,
@@ -243,37 +243,32 @@ pub fn inject_account(db_path: &PathBuf, account: &Account) -> AppResult<()> {
     Ok(())
 }
 
-/// Sync an account into every installed DB-backed client (classic + IDE).
-/// Uninstalled clients are reported with `ok = false`, detail "not installed".
-pub fn sync_db_clients(account: &Account) -> Vec<ClientSyncResult> {
-    [ClientKind::Classic, ClientKind::Ide]
-        .into_iter()
-        .map(|kind| {
-            let name = kind.name().to_string();
-            match installed_db_path(kind) {
-                None => ClientSyncResult {
-                    client: kind,
-                    name,
-                    ok: false,
-                    detail: "not installed".to_string(),
-                },
-                Some(path) => match inject_account(&path, account) {
-                    Ok(()) => ClientSyncResult {
-                        client: kind,
-                        name,
-                        ok: true,
-                        detail: format!("synced {}", path.display()),
-                    },
-                    Err(e) => ClientSyncResult {
-                        client: kind,
-                        name,
-                        ok: false,
-                        detail: e.to_string(),
-                    },
-                },
-            }
-        })
-        .collect()
+/// Sync an account into ONE DB-backed client (classic or IDE).
+/// Switching is per-client: only the selected client is written.
+pub fn sync_client_db(kind: ClientKind, account: &Account) -> ClientSyncResult {
+    let name = kind.name().to_string();
+    match installed_db_path(kind) {
+        None => ClientSyncResult {
+            client: kind,
+            name,
+            ok: false,
+            detail: "not installed".to_string(),
+        },
+        Some(path) => match inject_account(&path, account) {
+            Ok(()) => ClientSyncResult {
+                client: kind,
+                name,
+                ok: true,
+                detail: format!("synced {}", path.display()),
+            },
+            Err(e) => ClientSyncResult {
+                client: kind,
+                name,
+                ok: false,
+                detail: e.to_string(),
+            },
+        },
+    }
 }
 
 #[cfg(test)]

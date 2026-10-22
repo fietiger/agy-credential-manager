@@ -15,6 +15,7 @@ use crate::models::account::{
     Account, AccountExportItem, AccountExportResponse, AccountIndex, AccountSummary,
 };
 use crate::models::token::TokenData;
+use crate::modules::client_sync::ClientKind;
 use crate::modules::logger;
 use std::path::PathBuf;
 use std::sync::RwLock;
@@ -145,6 +146,12 @@ pub fn delete_account(id: &str) -> AppResult<()> {
         if idx.current_agy_account_id.as_deref() == Some(id) {
             idx.current_agy_account_id = None;
         }
+        if idx.current_classic_account_id.as_deref() == Some(id) {
+            idx.current_classic_account_id = None;
+        }
+        if idx.current_ide_account_id.as_deref() == Some(id) {
+            idx.current_ide_account_id = None;
+        }
     })?;
 
     logger::log_info("store", &format!("Account {} deleted", id));
@@ -214,13 +221,32 @@ pub async fn get_account_with_refresh(id: &str) -> AppResult<Account> {
 }
 
 /// Set the active account id in the index.
-pub fn set_active_account(id: &str) -> AppResult<()> {
+/// Record `id` as the current account of ONE client. Each client holds
+/// its account independently; other clients' slots are untouched.
+pub fn set_client_account(id: &str, client: ClientKind) -> AppResult<()> {
     // Validate the account exists
     get_account(id)?;
-    update_index(|idx| {
-        idx.current_agy_account_id = Some(id.to_string());
+    update_index(|idx| match client {
+        ClientKind::AgyCli => idx.current_agy_account_id = Some(id.to_string()),
+        ClientKind::Classic => idx.current_classic_account_id = Some(id.to_string()),
+        ClientKind::Ide => idx.current_ide_account_id = Some(id.to_string()),
     })?;
     Ok(())
+}
+
+/// The clients whose current-account slot holds `id`.
+pub fn active_clients_for(idx: &AccountIndex, id: &str) -> Vec<ClientKind> {
+    let mut out = Vec::new();
+    if idx.current_agy_account_id.as_deref() == Some(id) {
+        out.push(ClientKind::AgyCli);
+    }
+    if idx.current_classic_account_id.as_deref() == Some(id) {
+        out.push(ClientKind::Classic);
+    }
+    if idx.current_ide_account_id.as_deref() == Some(id) {
+        out.push(ClientKind::Ide);
+    }
+    out
 }
 
 /// Export all accounts for backup / migration.
@@ -487,5 +513,34 @@ mod import_tests {
         assert!(parse_import_entries(r#""just a string""#).is_err());
         let empty = parse_import_entries("[]").unwrap();
         assert!(empty.entries.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod slot_tests {
+    use super::*;
+
+    #[test]
+    fn active_clients_reflect_independent_slots() {
+        let mut idx = AccountIndex::new();
+        idx.current_agy_account_id = Some("a".to_string());
+        idx.current_ide_account_id = Some("a".to_string());
+        idx.current_classic_account_id = Some("b".to_string());
+        assert_eq!(
+            active_clients_for(&idx, "a"),
+            vec![ClientKind::AgyCli, ClientKind::Ide]
+        );
+        assert_eq!(active_clients_for(&idx, "b"), vec![ClientKind::Classic]);
+        assert!(active_clients_for(&idx, "nobody").is_empty());
+    }
+
+    #[test]
+    fn old_index_format_loads_with_empty_new_slots() {
+        // accounts.json written before per-client slots existed
+        let raw = r#"{"version":"1.0","accounts":[],"current_agy_account_id":"x"}"#;
+        let idx: AccountIndex = serde_json::from_str(raw).unwrap();
+        assert_eq!(idx.current_agy_account_id.as_deref(), Some("x"));
+        assert!(idx.current_classic_account_id.is_none());
+        assert!(idx.current_ide_account_id.is_none());
     }
 }

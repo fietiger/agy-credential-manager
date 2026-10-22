@@ -56,6 +56,13 @@ pub struct AccountIndex {
     /// The currently active account id for the agy CLI.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_agy_account_id: Option<String>,
+    /// The account currently switched into the Antigravity classic app.
+    /// Each client holds its own account independently.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_classic_account_id: Option<String>,
+    /// The account currently switched into Antigravity IDE.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_ide_account_id: Option<String>,
 }
 
 impl AccountIndex {
@@ -64,6 +71,8 @@ impl AccountIndex {
             version: "1.0".to_string(),
             accounts: Vec::new(),
             current_agy_account_id: None,
+            current_classic_account_id: None,
+            current_ide_account_id: None,
         }
     }
 }

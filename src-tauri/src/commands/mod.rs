@@ -44,14 +44,22 @@ pub struct AccountView {
     pub access_token_masked: String,
     pub refresh_token_masked: String,
     pub access_token_valid: bool,
+    /// Active in the agy CLI slot (kept for the status bar semantics).
     pub is_active: bool,
+    /// Every client this account is currently switched into.
+    pub active_in: Vec<client_sync::ClientKind>,
 }
 
 impl From<&crate::models::account::Account> for AccountView {
     fn from(acc: &crate::models::account::Account) -> Self {
-        let active = account_store::load_index()
-            .map(|idx| idx.current_agy_account_id.as_deref() == Some(&acc.id))
-            .unwrap_or(false);
+        let (active, active_in) = account_store::load_index()
+            .map(|idx| {
+                (
+                    idx.current_agy_account_id.as_deref() == Some(&acc.id),
+                    account_store::active_clients_for(&idx, &acc.id),
+                )
+            })
+            .unwrap_or((false, Vec::new()));
         Self {
             id: acc.id.clone(),
             email: acc.email.clone(),
@@ -65,6 +73,7 @@ impl From<&crate::models::account::Account> for AccountView {
             refresh_token_masked: acc.token.masked_refresh_token(),
             access_token_valid: acc.token.is_access_token_valid(),
             is_active: active,
+            active_in,
         }
     }
 }
@@ -117,79 +126,88 @@ pub fn delete_account(id: String) -> AppResult<()> {
     Ok(())
 }
 
-/// Activate an account: refresh its token and write it to the keyring.
+/// Switch an account into ONE selected client (`target`).
+///
+/// Each client holds its account independently — the other clients keep
+/// whichever account they already have. The result reports that single
+/// client's outcome.
 #[tauri::command]
-pub async fn set_active_account(id: String) -> AppResult<ActivationResult> {
-    logger::log_info("cmd", &format!("Activating account id={}", id));
+pub async fn set_active_account(
+    id: String,
+    target: client_sync::ClientKind,
+) -> AppResult<ActivationResult> {
+    logger::log_info(
+        "cmd",
+        &format!("Activating account id={} into client {}", id, target.name()),
+    );
     let mut acc = account_store::get_account_with_refresh(&id).await?;
 
-    // Sync to the agy CLI keyring. A keyring failure (e.g. no Secret
-    // Service running) is reported as this client's result instead of
-    // aborting the whole switch, so the desktop clients still get synced.
-    let cli_result = match agy_sync::sync_to_keyring(&acc) {
-        Ok(()) => match agy_sync::verify_keyring(&acc.token.access_token) {
-            Ok(true) => client_sync::ClientSyncResult {
-                client: client_sync::ClientKind::AgyCli,
-                name: client_sync::ClientKind::AgyCli.name().to_string(),
-                ok: true,
-                detail: format!(
-                    "keyring {}/{} synced + verified",
-                    agy_sync::KEYRING_SERVICE,
-                    agy_sync::KEYRING_ENTRY
-                ),
-            },
-            Ok(false) => client_sync::ClientSyncResult {
-                client: client_sync::ClientKind::AgyCli,
-                name: client_sync::ClientKind::AgyCli.name().to_string(),
-                ok: false,
-                detail: "keyring verification failed: stored token does not match".to_string(),
-            },
-            Err(e) => {
-                logger::log_warn(
-                    "cmd",
-                    &format!("Keyring verification could not be performed: {}", e),
-                );
-                client_sync::ClientSyncResult {
-                    client: client_sync::ClientKind::AgyCli,
-                    name: client_sync::ClientKind::AgyCli.name().to_string(),
-                    ok: true,
-                    detail: format!(
-                        "keyring {}/{} synced (verify unavailable)",
-                        agy_sync::KEYRING_SERVICE,
-                        agy_sync::KEYRING_ENTRY
-                    ),
-                }
+    let result = match target {
+        client_sync::ClientKind::AgyCli => {
+            // agy CLI: write the access token to the OS keyring and read
+            // it back to verify. Failures are reported as this client's
+            // result rather than aborting the command.
+            match agy_sync::sync_to_keyring(&acc) {
+                Ok(()) => match agy_sync::verify_keyring(&acc.token.access_token) {
+                    Ok(true) => client_sync::ClientSyncResult {
+                        client: target,
+                        name: target.name().to_string(),
+                        ok: true,
+                        detail: format!(
+                            "keyring {}/{} synced + verified",
+                            agy_sync::KEYRING_SERVICE,
+                            agy_sync::KEYRING_ENTRY
+                        ),
+                    },
+                    Ok(false) => client_sync::ClientSyncResult {
+                        client: target,
+                        name: target.name().to_string(),
+                        ok: false,
+                        detail: "keyring verification failed: stored token does not match"
+                            .to_string(),
+                    },
+                    Err(e) => {
+                        logger::log_warn(
+                            "cmd",
+                            &format!("Keyring verification could not be performed: {}", e),
+                        );
+                        client_sync::ClientSyncResult {
+                            client: target,
+                            name: target.name().to_string(),
+                            ok: true,
+                            detail: format!(
+                                "keyring {}/{} synced (verify unavailable)",
+                                agy_sync::KEYRING_SERVICE,
+                                agy_sync::KEYRING_ENTRY
+                            ),
+                        }
+                    }
+                },
+                Err(e) => client_sync::ClientSyncResult {
+                    client: target,
+                    name: target.name().to_string(),
+                    ok: false,
+                    detail: format!("keyring sync failed: {}", e),
+                },
             }
-        },
-        Err(e) => client_sync::ClientSyncResult {
-            client: client_sync::ClientKind::AgyCli,
-            name: client_sync::ClientKind::AgyCli.name().to_string(),
-            ok: false,
-            detail: format!("keyring sync failed: {}", e),
-        },
+        }
+        client_sync::ClientKind::Classic | client_sync::ClientKind::Ide => {
+            client_sync::sync_client_db(target, &acc)
+        }
     };
 
-    // Update index
-    acc.update_last_used();
-    account_store::set_active_account(&id)?;
-
-    // Sync into every installed desktop client (classic + IDE state DBs)
-    let mut clients = vec![cli_result];
-    clients.extend(client_sync::sync_db_clients(&acc));
-    for r in &clients {
-        logger::log_info(
-            "cmd",
-            &format!("client {}: ok={} {}", r.name, r.ok, r.detail),
-        );
+    if result.ok {
+        acc.update_last_used();
+        account_store::set_client_account(&id, target)?;
     }
     logger::log_info(
         "cmd",
-        &format!("Account {} activated and synced to clients", id),
+        &format!("client {}: ok={} {}", result.name, result.ok, result.detail),
     );
     Ok(ActivationResult {
         account_id: id,
         email: acc.email.clone(),
-        clients,
+        clients: vec![result],
     })
 }
 
