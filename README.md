@@ -41,8 +41,11 @@
 sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
   librsvg2-dev patchelf libssl-dev
 
-# 构建 release 可执行文件
-cargo build --release --manifest-path src-tauri/Cargo.toml
+# 构建可独立运行的 release 可执行文件（必须用 Tauri CLI）
+npx -y @tauri-apps/cli@^2 build --no-bundle
+
+# 注意：不要直接 cargo build —— 产出的是开发模式二进制，
+# 运行时会去连接 localhost:1420 的开发服务器，无法独立使用。
 ```
 
 GitHub Actions（`.github/workflows/build.yml`）会在 push 时自动构建 Windows / macOS / Linux 三平台产物；打 `v*` tag 时自动发布 Release。
