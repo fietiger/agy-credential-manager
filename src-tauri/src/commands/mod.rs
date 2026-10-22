@@ -350,9 +350,14 @@ pub async fn start_oauth() -> AppResult<OauthStartResponse> {
         senders.insert(port, manual_tx);
     }
 
+    // Build the URL once: the state must be the same one the user opens and
+    // the one we log, otherwise debugging a failed consent is confusing.
+    let auth_url = oauth::build_auth_url(port);
+
     // Spawn the OAuth flow
+    let oauth_url = auth_url.clone();
     let _oauth_task = tokio::spawn(async move {
-        let result = oauth::start_oauth_flow(port, manual_rx).await;
+        let result = oauth::start_oauth_flow(port, oauth_url, manual_rx).await;
         let mut tasks = oauth_tasks().lock().expect("oauth_tasks lock poisoned");
         match result {
             Ok(oauth_result) => {
@@ -383,7 +388,7 @@ pub async fn start_oauth() -> AppResult<OauthStartResponse> {
 
     Ok(OauthStartResponse {
         port,
-        auth_url: oauth::build_auth_url(port),
+        auth_url,
     })
 }
 

@@ -7,7 +7,7 @@
 ## 功能
 
 - **多账号管理**：添加、删除多个账号，列表展示邮箱、标签、状态与掩码后的 token
-- **Google OAuth 登录**：内置 OAuth 流程（本地 loopback 回调），登录成功后自动保存凭证。链接不会替你自动打开，由你选择「在浏览器中打开」或「复制链接」（也可以复制到另一台机器的浏览器）；如果浏览器没有回调回本机，还可以把地址栏里的回调链接或 authorization code 粘回来完成登录
+- **Google OAuth 登录**：内置 OAuth 流程（本地 loopback 回调），登录成功后自动保存凭证。链接不会替你自动打开，由你选择「在浏览器中打开」或「复制链接」（也可以复制到另一台机器的浏览器）；如果浏览器没有回调回本机，还可以把地址栏里的回调链接或 authorization code 粘回来完成登录。⚠️ 浏览器用的是它当前登录的 Google 账号：若页面报 `invalid_scope` / `access_denied` / “service has been disabled in this account”，说明那个账号被 Google 限制了，换账号或无痕窗口再试
 - **导入 refresh token**：已有 refresh token 时可直接导入生成账号
 - **一键导入本地账号**：读取本机三个客户端当前登录的凭证（agy CLI 的 keyring、Antigravity 与 Antigravity IDE 的 `state.vscdb`），一键收进管理器统一管理；按邮箱与 refresh token 去重，重复的只跳过不报错，每个客户端的处理结果（已导入 / 已存在 / 未登录 / 读不到邮箱）都会显示出来
 - **文件批量导入**：可直接导入 Antigravity-Manager 导出的 JSON 文件（裸数组 `[{email, refresh_token}]`），也兼容本应用自己的导出格式；自动跳过无效条目与重复账号并报告数量，邮箱取自文件、不会显示 unknown

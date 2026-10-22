@@ -96,10 +96,10 @@ pub fn build_auth_url(port: u16) -> String {
 ///   because the browser never came back to this machine.
 pub async fn start_oauth_flow(
     port: u16,
+    auth_url: String,
     mut manual_rx: tokio::sync::mpsc::Receiver<String>,
 ) -> AppResult<OAuthResult> {
     let redirect_uri = format!("http://127.0.0.1:{}/callback", port);
-    let auth_url = build_auth_url(port);
 
     logger::log_info(
         "oauth",
@@ -271,7 +271,11 @@ async fn wait_for_code(
         }
     }
     Err(AppError::Oauth(
-        "Timed out waiting for OAuth callback (10 minutes)".to_string(),
+        "Timed out waiting for the authorization code (10 minutes). \
+         If the browser showed invalid_scope / access_denied / \
+         \"service has been disabled in this account\", the Google account \
+         signed in there is restricted — sign in with another account and retry."
+            .to_string(),
     ))
 }
 
