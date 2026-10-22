@@ -161,12 +161,6 @@ pub fn get_account(id: &str) -> AppResult<Account> {
     Ok(serde_json::from_str(&raw)?)
 }
 
-/// List all accounts (summaries from the index).
-pub fn list_accounts() -> AppResult<Vec<AccountSummary>> {
-    let idx = load_index()?;
-    Ok(idx.accounts)
-}
-
 /// Read a full account, or refresh its access token if expired.
 pub async fn get_account_with_refresh(id: &str) -> AppResult<Account> {
     let mut account = get_account(id)?;
@@ -243,19 +237,16 @@ pub fn import_from_refresh_token(
     project_id: Option<String>,
     session_id: Option<String>,
 ) -> AppResult<Account> {
-    let token = TokenData {
-        access_token: access_token.unwrap_or_default(),
-        refresh_token: refresh_token.to_string(),
-        expires_in: expires_in.unwrap_or(3600),
-        expiry_timestamp: chrono::Utc::now().timestamp() + expires_in.unwrap_or(3600),
-        token_type: "Bearer".to_string(),
-        email: None,
+    let token = TokenData::new(
+        access_token.unwrap_or_default(),
+        refresh_token.to_string(),
+        expires_in.unwrap_or(3600),
+        None,
         project_id,
-        oauth_client_key: None,
         session_id,
-        is_gcp_tos: false,
-        id_token: None,
-    };
+        false,
+        None,
+    );
 
     let email = extract_email_from_token(&token)?;
     let id = uuid::Uuid::new_v4().to_string();

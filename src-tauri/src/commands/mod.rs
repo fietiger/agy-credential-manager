@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 /// Result of a completed OAuth task.
 enum OauthTaskResult {
     Pending,
-    Success(Account),
+    Success(Box<Account>),
     Failed(String),
 }
 
@@ -123,6 +123,23 @@ pub async fn set_active_account(id: String) -> AppResult<()> {
     let mut acc = account_store::get_account_with_refresh(&id).await?;
     // Write to keyring
     agy_sync::sync_to_keyring(&acc)?;
+    // Read back and verify the stored token matches the activated account
+    match agy_sync::verify_keyring(&acc.token.access_token) {
+        Ok(true) => {}
+        Ok(false) => {
+            let msg =
+                "Keyring verification failed: stored token does not match the activated account"
+                    .to_string();
+            logger::log_error("cmd", &msg);
+            return Err(AppError::Keyring(msg));
+        }
+        Err(e) => {
+            logger::log_warn(
+                "cmd",
+                &format!("Keyring verification could not be performed: {}", e),
+            );
+        }
+    }
     // Update index
     acc.update_last_used();
     account_store::set_active_account(&id)?;
@@ -170,7 +187,7 @@ pub async fn start_oauth() -> AppResult<OauthStartResponse> {
                 let account = Account::new(id, email, oauth_result.token);
                 match account_store::add_account(account.clone()) {
                     Ok(_) => {
-                        tasks.insert(port, OauthTaskResult::Success(account));
+                        tasks.insert(port, OauthTaskResult::Success(Box::new(account)));
                     }
                     Err(e) => {
                         tasks.insert(port, OauthTaskResult::Failed(e.to_string()));
