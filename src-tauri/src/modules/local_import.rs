@@ -80,11 +80,7 @@ fn db_credential(kind: ClientKind) -> Option<Credential> {
 /// Every client this machine can import from, in display order.
 fn collect_credentials() -> Vec<(ClientKind, Option<Credential>)> {
     let mut out = Vec::new();
-    for kind in [
-        ClientKind::AgyCli,
-        ClientKind::Classic,
-        ClientKind::Ide,
-    ] {
+    for kind in [ClientKind::AgyCli, ClientKind::Classic, ClientKind::Ide] {
         let cred = match kind {
             ClientKind::AgyCli => cli_credential(),
             _ => db_credential(kind),
@@ -157,7 +153,12 @@ pub fn import_local_accounts() -> AppResult<LocalImportSummary> {
             continue;
         };
 
-        let email = match cred.email.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
+        let email = match cred
+            .email
+            .as_deref()
+            .map(str::trim)
+            .filter(|e| !e.is_empty())
+        {
             Some(email) => email.to_string(),
             None => {
                 result.clients.push(ClientImport {
@@ -218,7 +219,10 @@ pub fn import_local_accounts() -> AppResult<LocalImportSummary> {
                 });
             }
             Err(e) => {
-                logger::log_error("import", &format!("Import from {} failed: {}", kind.name(), e));
+                logger::log_error(
+                    "import",
+                    &format!("Import from {} failed: {}", kind.name(), e),
+                );
                 result.clients.push(ClientImport {
                     client: name,
                     email: Some(email),

@@ -71,10 +71,7 @@ pub fn cli_state_present() -> bool {
     if google_accounts_file().map(|p| p.exists()).unwrap_or(false) {
         return true;
     }
-    entry()
-        .ok()
-        .and_then(|e| e.get_password().ok())
-        .is_some()
+    entry().ok().and_then(|e| e.get_password().ok()).is_some()
 }
 
 /// Read the stored credential document, preferring the live keyring copy
@@ -94,10 +91,7 @@ fn read_stored_payload() -> Option<Value> {
             },
             Err(keyring::Error::NoEntry) => logger::log_debug(
                 "keyring",
-                &format!(
-                    "No keyring entry at {}/{}",
-                    KEYRING_SERVICE, KEYRING_ENTRY
-                ),
+                &format!("No keyring entry at {}/{}", KEYRING_SERVICE, KEYRING_ENTRY),
             ),
             Err(err) => logger::log_warn(
                 "keyring",
@@ -167,10 +161,7 @@ pub fn sync_to_keyring(account: &Account) -> AppResult<()> {
     let previous = read_stored_payload();
     logger::log_info(
         "keyring",
-        &format!(
-            "Existing CLI credential found: {}",
-            previous.is_some()
-        ),
+        &format!("Existing CLI credential found: {}", previous.is_some()),
     );
     let payload = build_payload(account, previous);
     let serialized = serde_json::to_string(&payload).map_err(|e| {
@@ -272,7 +263,10 @@ pub fn verify_keyring(expected_token: &str) -> AppResult<bool> {
                 // Tolerate a plain token string (older CLI versions).
                 Err(_) => stored == expected_token,
             };
-            logger::log_info("keyring", &format!("Keyring verification: match={}", matches));
+            logger::log_info(
+                "keyring",
+                &format!("Keyring verification: match={}", matches),
+            );
             Ok(matches)
         }
         Err(e) => {
@@ -317,7 +311,10 @@ pub fn read_cli_credential() -> Option<CliCredential> {
         .trim()
         .to_string();
     if refresh_token.is_empty() {
-        logger::log_debug("keyring", "CLI credential has no refresh token, skipping import");
+        logger::log_debug(
+            "keyring",
+            "CLI credential has no refresh token, skipping import",
+        );
         return None;
     }
 

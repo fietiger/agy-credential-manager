@@ -8,35 +8,7 @@ use crate::modules::client_sync;
 use crate::modules::local_import;
 use crate::modules::logger;
 use crate::modules::oauth;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-
-// ── Shared state for in-flight OAuth tasks ───────────────────────────────
-
-/// Result of a completed OAuth task.
-enum OauthTaskResult {
-    Pending,
-    Success(Box<Account>),
-    Failed(String),
-}
-
-/// Global map of in-flight OAuth tasks, keyed by port number.
-static OAUTH_TASKS: std::sync::OnceLock<Arc<Mutex<HashMap<u16, OauthTaskResult>>>> =
-    std::sync::OnceLock::new();
-
-fn oauth_tasks() -> &'static Arc<Mutex<HashMap<u16, OauthTaskResult>>> {
-    OAUTH_TASKS.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
-}
-
-/// Channels that let the UI hand a manually pasted authorization code to a
-/// running OAuth flow, keyed by the flow's callback port.
-static MANUAL_CODES: std::sync::OnceLock<Arc<Mutex<HashMap<u16, tokio::sync::mpsc::Sender<String>>>>> =
-    std::sync::OnceLock::new();
-
-fn manual_codes() -> &'static Arc<Mutex<HashMap<u16, tokio::sync::mpsc::Sender<String>>>> {
-    MANUAL_CODES.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
-}
+use serde::Serialize;
 
 // ── DTO types returned to the frontend ───────────────────────────────────
 
@@ -314,167 +286,52 @@ pub fn list_clients() -> AppResult<Vec<client_sync::ClientStatus>> {
     Ok(out)
 }
 
-/// Start the OAuth flow.
-///
-/// Returns the authorization URL and the local callback port. The link is not
-/// opened here — the UI offers "open in browser" / "copy link" so the user
-/// chooses (the link may also be used on another machine). Either the loopback
-/// callback or a pasted code (`submit_oauth_code`) completes the flow; the
-/// frontend polls `poll_oauth(port)` meanwhile.
+/// Prepare the OAuth flow and return the authorization URL.
+/// The URL is shown in the UI (with a Copy button) before anything opens, so
+/// the user can authorize in any browser where they are signed in to Google.
+/// Listeners start now, so an early authorization is not lost.
 #[tauri::command]
-pub async fn start_oauth() -> AppResult<OauthStartResponse> {
-    // Pick a random available port
-    use std::net::TcpListener as StdTcpListener;
-    let listener =
-        StdTcpListener::bind("127.0.0.1:0").map_err(|e| AppError::Other(e.to_string()))?;
-    let port = listener
-        .local_addr()
-        .map_err(|e| AppError::Other(e.to_string()))?
-        .port();
-    drop(listener);
-
-    // Register as pending
-    {
-        let mut tasks = oauth_tasks()
-            .lock()
-            .map_err(|_| AppError::Other("lock poisoned".into()))?;
-        tasks.insert(port, OauthTaskResult::Pending);
-    }
-
-    // Channel for a manually pasted code
-    let (manual_tx, manual_rx) = tokio::sync::mpsc::channel::<String>(1);
-    {
-        let mut senders = manual_codes()
-            .lock()
-            .map_err(|_| AppError::Other("manual_codes lock poisoned".into()))?;
-        senders.insert(port, manual_tx);
-    }
-
-    // Build the URL once: the state must be the same one the user opens and
-    // the one we log, otherwise debugging a failed consent is confusing.
-    let auth_url = oauth::build_auth_url(port);
-
-    // Spawn the OAuth flow
-    let oauth_url = auth_url.clone();
-    let _oauth_task = tokio::spawn(async move {
-        let result = oauth::start_oauth_flow(port, oauth_url, manual_rx).await;
-        let mut tasks = oauth_tasks().lock().expect("oauth_tasks lock poisoned");
-        match result {
-            Ok(oauth_result) => {
-                let email = oauth_result
-                    .email
-                    .clone()
-                    .unwrap_or_else(|| "unknown".to_string());
-                let id = uuid::Uuid::new_v4().to_string();
-                let account = Account::new(id, email, oauth_result.token);
-                match account_store::add_account(account.clone()) {
-                    Ok(_) => {
-                        tasks.insert(port, OauthTaskResult::Success(Box::new(account)));
-                    }
-                    Err(e) => {
-                        tasks.insert(port, OauthTaskResult::Failed(e.to_string()));
-                    }
-                }
-            }
-            Err(e) => {
-                tasks.insert(port, OauthTaskResult::Failed(e.to_string()));
-            }
-        }
-        drop(tasks);
-        if let Ok(mut senders) = manual_codes().lock() {
-            senders.remove(&port);
-        }
-    });
-
-    Ok(OauthStartResponse {
-        port,
-        auth_url,
-    })
+pub async fn oauth_prepare() -> AppResult<String> {
+    oauth::prepare_oauth().await
 }
 
-/// Open the authorization URL in the system browser, at the user's request.
+/// Start OAuth: opens the default browser and waits for the code (via the
+/// loopback callback or a manual submission), then stores the account.
 #[tauri::command]
-pub fn open_auth_url(url: String) -> AppResult<()> {
-    let parsed = url::Url::parse(&url)
-        .map_err(|e| AppError::Validation(format!("Invalid authorization URL: {}", e)))?;
-    let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
-    let is_google = parsed.scheme() == "https" && (host == "google.com" || host.ends_with(".google.com"));
-    let is_loopback =
-        parsed.scheme() == "http" && (host == "127.0.0.1" || host == "localhost" || host == "::1");
-    if !is_google && !is_loopback {
-        return Err(AppError::Validation(
-            "Refusing to open a URL that is not a Google authorization page".to_string(),
-        ));
-    }
-    oauth::open_in_browser(&url).map_err(|e| {
-        logger::log_error("oauth", &format!("Could not open browser: {}", e));
-        AppError::Other(format!("Could not open the browser: {}", e))
-    })
+pub async fn oauth_start() -> AppResult<AccountView> {
+    finish_oauth(oauth::wait_for_oauth(true).await?)
 }
 
-/// Hand a manually pasted callback URL / authorization code to the running flow.
+/// Complete OAuth without opening the browser: the user authorized through
+/// the copied link in their preferred browser; just wait for the code.
 #[tauri::command]
-pub fn submit_oauth_code(port: u16, input: String) -> AppResult<()> {
-    let code = oauth::parse_code_input(&input).ok_or_else(|| {
-        AppError::Validation(
-            "No authorization code found. Paste the full callback URL or the code itself."
-                .to_string(),
-        )
-    })?;
-
-    let sender = manual_codes()
-        .lock()
-        .map_err(|_| AppError::Other("manual_codes lock poisoned".into()))?
-        .get(&port)
-        .cloned()
-        .ok_or_else(|| AppError::Oauth("No pending OAuth flow on this port".to_string()))?;
-
-    logger::log_info(
-        "oauth",
-        &format!("Code pasted by the user for port {}", port),
-    );
-    sender.try_send(code).map_err(|e| {
-        AppError::Other(format!("Could not hand the code to the OAuth flow: {}", e))
-    })
+pub async fn oauth_complete() -> AppResult<AccountView> {
+    finish_oauth(oauth::wait_for_oauth(false).await?)
 }
 
-/// Poll for OAuth completion on the given port.
+/// Manually submit an authorization code (or a full callback link) — for
+/// when the browser redirect could not reach this machine.
 #[tauri::command]
-pub fn poll_oauth(port: u16) -> AppResult<OauthPollResponse> {
-    let tasks = oauth_tasks()
-        .lock()
-        .map_err(|_| AppError::Other("oauth_tasks lock poisoned".into()))?;
+pub async fn oauth_submit_code(code: String) -> AppResult<()> {
+    oauth::submit_oauth_code(&code).await
+}
 
-    match tasks.get(&port) {
-        Some(OauthTaskResult::Pending) => Ok(OauthPollResponse {
-            done: false,
-            success: false,
-            message: String::new(),
-            error: None,
-            account_id: None,
-        }),
-        Some(OauthTaskResult::Success(account)) => Ok(OauthPollResponse {
-            done: true,
-            success: true,
-            message: format!("Successfully added account: {}", account.email),
-            error: None,
-            account_id: Some(account.id.clone()),
-        }),
-        Some(OauthTaskResult::Failed(msg)) => Ok(OauthPollResponse {
-            done: true,
-            success: false,
-            message: String::new(),
-            error: Some(msg.clone()),
-            account_id: None,
-        }),
-        None => Ok(OauthPollResponse {
-            done: true,
-            success: false,
-            message: String::new(),
-            error: Some("No OAuth task found for this port".to_string()),
-            account_id: None,
-        }),
-    }
+/// Cancel the active OAuth flow.
+#[tauri::command]
+pub fn oauth_cancel() -> AppResult<()> {
+    oauth::cancel_oauth();
+    Ok(())
+}
+
+fn finish_oauth(result: oauth::OAuthResult) -> AppResult<AccountView> {
+    let email = result
+        .email
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
+    let id = uuid::Uuid::new_v4().to_string();
+    let account = Account::new(id, email, result.token);
+    account_store::add_account(account.clone())?;
+    Ok(AccountView::from(&account))
 }
 
 /// Import an account by pasting a refresh token directly.
@@ -550,20 +407,3 @@ pub fn open_log_dir() -> AppResult<()> {
 }
 
 // ── supporting types ──────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OauthStartResponse {
-    pub port: u16,
-    pub auth_url: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OauthPollResponse {
-    pub done: bool,
-    pub success: bool,
-    pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub account_id: Option<String>,
-}
