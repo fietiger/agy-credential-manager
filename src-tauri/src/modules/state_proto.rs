@@ -221,6 +221,67 @@ pub fn create_unified_state_entry(sentinel_key: &str, payload: &[u8]) -> String 
     general_purpose::STANDARD.encode(create_unified_topic_entry(sentinel_key, payload))
 }
 
+/// Create one topic entry whose row payload is stored verbatim instead of
+/// base64-encoded. The clients use this for the JSON auth-state entry
+/// (`authStateWithContextSentinelKey`), whose row holds plain JSON.
+pub fn create_unified_topic_entry_raw(sentinel_key: &str, payload: &[u8]) -> Vec<u8> {
+    let row = encode_len_delim_field(1, payload);
+    let entry = [
+        encode_string_field(1, sentinel_key),
+        encode_len_delim_field(2, &row),
+    ]
+    .concat();
+    encode_len_delim_field(1, &entry)
+}
+
+/// Read the raw (non-base64) payload of a topic entry, e.g. the JSON body of
+/// `authStateWithContextSentinelKey`.
+pub fn decode_unified_state_raw(value_b64: &str, sentinel_key: &str) -> Option<Vec<u8>> {
+    use base64::{engine::general_purpose, Engine as _};
+    let topic = general_purpose::STANDARD.decode(value_b64).ok()?;
+    for entry in find_all_fields(&topic, 1).ok()? {
+        if unified_topic_entry_key(&entry).as_deref() != Some(sentinel_key) {
+            continue;
+        }
+        let row = find_field(&entry, 2).ok()??;
+        let payload = find_field(&row, 1).ok()?;
+        return payload.filter(|p| !p.is_empty());
+    }
+    None
+}
+
+/// Build the JSON auth-state payload for the `oauthToken` topic.
+///
+/// The clients keep `{"state": "...", "context": {...}}` next to the token.
+/// Unknown keys and context fields from `previous` are preserved, so a switch
+/// only flips the state to `signedIn` and refreshes the project binding.
+pub fn create_auth_state_payload(previous: Option<&[u8]>, project: &str) -> Vec<u8> {
+    let mut doc: serde_json::Value = previous
+        .and_then(|raw| serde_json::from_slice::<serde_json::Value>(raw).ok())
+        .filter(|v: &serde_json::Value| v.is_object())
+        .unwrap_or_else(|| serde_json::json!({ "state": "signedOut", "context": {} }));
+
+    doc["state"] = serde_json::json!("signedIn");
+    if !doc.get("context").map(|c| c.is_object()).unwrap_or(false) {
+        doc["context"] = serde_json::json!({});
+    }
+    let project = project.trim();
+    if !project.is_empty() {
+        doc["context"]["project"] = serde_json::json!(project);
+    }
+
+    serde_json::to_vec(&doc).unwrap_or_else(|_| b"{\"state\":\"signedIn\"}".to_vec())
+}
+
+/// Extract the `state` field (`signedIn` / `signedOut` / ...) of an auth-state
+/// payload.
+pub fn auth_state_label(raw: &[u8]) -> Option<String> {
+    let doc: serde_json::Value = serde_json::from_slice(raw).ok()?;
+    doc.get("state")
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string())
+}
+
 fn unified_topic_entry_key(entry: &[u8]) -> Option<String> {
     let key_bytes = find_field(entry, 1).ok()??;
     String::from_utf8(key_bytes).ok()
@@ -376,5 +437,31 @@ mod tests {
             user_status_email(&decoded).as_deref(),
             Some("someone@example.com")
         );
+    }
+
+    #[test]
+    fn auth_state_entry_is_raw_json() {
+        use base64::{engine::general_purpose, Engine as _};
+
+        let payload = create_auth_state_payload(None, "proj-1");
+        assert_eq!(auth_state_label(&payload).as_deref(), Some("signedIn"));
+
+        let value = general_purpose::STANDARD.encode(create_unified_topic_entry_raw(
+            "authStateWithContextSentinelKey",
+            &payload,
+        ));
+        let raw = decode_unified_state_raw(&value, "authStateWithContextSentinelKey").unwrap();
+        assert_eq!(raw, payload);
+        assert!(String::from_utf8(raw).unwrap().contains("proj-1"));
+    }
+
+    #[test]
+    fn auth_state_payload_keeps_existing_context() {
+        let previous = br#"{"state":"signedOut","context":{"project":"old","appealUrl":"x"}}"#;
+        let payload = create_auth_state_payload(Some(previous), "");
+        let doc: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(doc["state"], "signedIn");
+        assert_eq!(doc["context"]["project"], "old");
+        assert_eq!(doc["context"]["appealUrl"], "x");
     }
 }

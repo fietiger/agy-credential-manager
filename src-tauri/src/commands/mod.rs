@@ -273,6 +273,7 @@ pub fn list_clients() -> AppResult<Vec<client_sync::ClientStatus>> {
         installed: client_sync::agy_cli_on_path() || agy_sync::cli_state_present(),
         db_path: None,
         current_email: cli_email,
+        auth_state: None,
     });
 
     for kind in [
@@ -290,12 +291,14 @@ pub fn list_clients() -> AppResult<Vec<client_sync::ClientStatus>> {
                 .or_else(|| db_path.as_ref().and_then(client_sync::read_client_email)),
             _ => db_path.as_ref().and_then(client_sync::read_client_email),
         };
+        let auth_state = db_path.as_ref().and_then(client_sync::read_client_state);
         out.push(client_sync::ClientStatus {
             client: kind,
             name: kind.name().to_string(),
             installed: db_path.is_some(),
             db_path: db_path.map(|p| p.to_string_lossy().to_string()),
             current_email,
+            auth_state,
         });
     }
     Ok(out)

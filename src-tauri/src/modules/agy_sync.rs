@@ -286,7 +286,7 @@ pub fn read_cli_account() -> Option<CliAccount> {
 
 /// Decode the `email` claim from a Google id_token (JWT, no verification –
 /// it is only used for display, never for authentication decisions).
-fn email_from_id_token(id_token: &str) -> Option<String> {
+pub(crate) fn email_from_id_token(id_token: &str) -> Option<String> {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 
     let payload_b64 = id_token.split('.').nth(1)?;

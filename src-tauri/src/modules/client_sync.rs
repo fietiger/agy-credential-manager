@@ -33,6 +33,10 @@ pub const KEY_LEGACY_AGENT_STATE: &str = "jetskiStateSync.agentManagerInitState"
 const SENTINEL_OAUTH: &str = "oauthTokenInfoSentinelKey";
 const SENTINEL_USER_STATUS: &str = "userStatusSentinelKey";
 const SENTINEL_PROJECT: &str = "enterpriseGcpProjectId";
+/// Sign-in state kept in the same topic as the token. A client whose entry
+/// still says `signedOut` behaves as logged out even when a token is present,
+/// so a switch has to flip this to `signedIn` as well.
+const SENTINEL_AUTH_STATE: &str = "authStateWithContextSentinelKey";
 
 /// A client that can hold the active account.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -71,6 +75,9 @@ pub struct ClientStatus {
     pub db_path: Option<String>,
     /// Email currently signed in on this client, when readable.
     pub current_email: Option<String>,
+    /// The client's own sign-in state (`signedIn` / `signedOut` / ...), when
+    /// the client keeps one next to its token.
+    pub auth_state: Option<String>,
 }
 
 /// Outcome of syncing the active account into one client.
@@ -131,16 +138,45 @@ pub fn agy_cli_on_path() -> bool {
 pub fn read_client_email(db_path: &PathBuf) -> Option<String> {
     let conn =
         Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
-    let value: Option<String> = conn
-        .query_row(
-            "SELECT value FROM ItemTable WHERE key = ?1",
-            [KEY_USER_STATUS],
-            |row| row.get(0),
-        )
-        .optional()
-        .ok()?;
-    let payload = state_proto::decode_unified_state_payload(&value?, SENTINEL_USER_STATUS)?;
-    state_proto::user_status_email(&payload)
+    read_email_from_conn(&conn)
+}
+
+/// Email a client's state DB points at, if it holds one.
+///
+/// Two independent records carry it, and either may be the only one a given
+/// client version keeps:
+/// - `userStatus` — the display payload written on sign-in;
+/// - `oauthToken` — the token payload, whose `id_token` claim names the owner.
+fn read_email_from_conn(conn: &Connection) -> Option<String> {
+    let user_status = get_key(conn, KEY_USER_STATUS).ok().flatten();
+
+    // An entry with an empty row is what the clients leave behind after
+    // signing out — treat it as absent instead of failing the whole lookup.
+    if let Some(value) = user_status.as_deref() {
+        if let Some(payload) =
+            state_proto::decode_unified_state_payload(value, SENTINEL_USER_STATUS)
+        {
+            if let Some(email) = state_proto::user_status_email(&payload) {
+                return Some(email);
+            }
+        }
+    }
+
+    let token_entry = get_key(conn, KEY_OAUTH_TOKEN).ok().flatten()?;
+    let token_payload =
+        state_proto::decode_unified_state_payload(&token_entry, SENTINEL_OAUTH)?;
+    let id_token = state_proto::find_field(&token_payload, 5).ok()??;
+    let id_token = String::from_utf8(id_token).ok()?;
+    crate::modules::agy_sync::email_from_id_token(&id_token)
+}
+
+/// The sign-in state a client records for itself (`signedIn` / `signedOut`).
+pub fn read_client_state(db_path: &PathBuf) -> Option<String> {
+    let conn =
+        Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+    let value = get_key(&conn, KEY_OAUTH_TOKEN).ok().flatten()?;
+    let raw = state_proto::decode_unified_state_raw(&value, SENTINEL_AUTH_STATE)?;
+    state_proto::auth_state_label(&raw)
 }
 
 fn set_key(conn: &Connection, key: &str, value: &str) -> AppResult<()> {
@@ -183,14 +219,39 @@ pub fn inject_account(db_path: &PathBuf, account: &Account) -> AppResult<()> {
         account.token.id_token.as_deref(),
         Some(&account.email),
     );
-    let current_topic = get_key(&conn, KEY_OAUTH_TOKEN)?
+    let project_id = account
+        .token
+        .project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|pid| !pid.is_empty())
+        .map(str::to_string);
+
+    let current_value = get_key(&conn, KEY_OAUTH_TOKEN)?;
+    let current_topic = current_value
+        .as_deref()
         .map(|b64| general_purpose::STANDARD.decode(b64).unwrap_or_default())
         .unwrap_or_default();
+    // Keep whatever context the client had, only flipping the state.
+    let previous_state = current_value
+        .as_deref()
+        .and_then(|b64| state_proto::decode_unified_state_raw(b64, SENTINEL_AUTH_STATE));
+    let auth_state = state_proto::create_auth_state_payload(
+        previous_state.as_deref(),
+        project_id.as_deref().unwrap_or(""),
+    );
+
     let mut topic = state_proto::remove_unified_topic_entry(&current_topic, SENTINEL_OAUTH)
+        .map_err(AppError::Other)?;
+    topic = state_proto::remove_unified_topic_entry(&topic, SENTINEL_AUTH_STATE)
         .map_err(AppError::Other)?;
     topic.extend(state_proto::create_unified_topic_entry(
         SENTINEL_OAUTH,
         &oauth_info,
+    ));
+    topic.extend(state_proto::create_unified_topic_entry_raw(
+        SENTINEL_AUTH_STATE,
+        &auth_state,
     ));
     set_key(
         &conn,
@@ -206,13 +267,7 @@ pub fn inject_account(db_path: &PathBuf, account: &Account) -> AppResult<()> {
     set_key(&conn, KEY_USER_STATUS, &status_entry)?;
 
     // Enterprise project preference follows the account's project id.
-    match account
-        .token
-        .project_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|pid| !pid.is_empty())
-    {
+    match project_id.as_deref() {
         Some(pid) => {
             let entry = state_proto::create_unified_state_entry(
                 SENTINEL_PROJECT,
@@ -238,6 +293,33 @@ pub fn inject_account(db_path: &PathBuf, account: &Account) -> AppResult<()> {
         [KEY_LEGACY_AGENT_STATE],
     )
     .map_err(|e| AppError::Other(format!("failed to clear legacy state: {}", e)))?;
+
+    // Read back what the client will actually see. A running client keeps its
+    // state in memory and can write it back over ours straight away, which
+    // leaves the app reporting success while the client stays signed out — so
+    // treat a mismatch as a failed switch instead of a silent one.
+    match read_email_from_conn(&conn) {
+        Some(email) if email.eq_ignore_ascii_case(&account.email) => {}
+        Some(other) => {
+            let msg = format!(
+                "{} kept its previous account ({}) instead of {} — close the client and retry",
+                db_path.display(),
+                other,
+                account.email
+            );
+            logger::log_warn("clients", &msg);
+            return Err(AppError::Other(msg));
+        }
+        None => {
+            let msg = format!(
+                "{} holds no readable account after writing {} — close the client and retry",
+                db_path.display(),
+                account.email
+            );
+            logger::log_warn("clients", &msg);
+            return Err(AppError::Other(msg));
+        }
+    }
 
     logger::log_info(
         "clients",
@@ -355,11 +437,14 @@ mod tests {
         let account = sample_account();
         inject_account(&db, &account).unwrap();
 
-        // The client now reports the switched account's email.
+        // The client now reports the switched account's email...
         assert_eq!(
             read_client_email(&db).as_deref(),
             Some("switcher@example.com")
         );
+        // ...and its own sign-in state, which the clients check separately,
+        // was flipped from signedOut to signedIn.
+        assert_eq!(read_client_state(&db).as_deref(), Some("signedIn"));
 
         let conn = Connection::open(&db).unwrap();
         // oauthToken decodes to our access/refresh tokens...
