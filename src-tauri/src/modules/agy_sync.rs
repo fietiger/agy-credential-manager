@@ -68,16 +68,41 @@ pub fn cli_state_present() -> bool {
 /// Read the stored credential document, preferring the live keyring copy
 /// (the CLI refreshes it there; the file can be stale).
 fn read_stored_payload() -> Option<Value> {
-    if let Ok(e) = entry() {
-        if let Ok(stored) = e.get_password() {
-            if let Ok(v) = serde_json::from_str::<Value>(&stored) {
-                return Some(v);
-            }
-        }
+    match entry() {
+        Ok(e) => match e.get_password() {
+            Ok(stored) => match serde_json::from_str::<Value>(&stored) {
+                Ok(v) => {
+                    logger::log_debug("keyring", "Read CLI credentials from keyring");
+                    return Some(v);
+                }
+                Err(err) => logger::log_warn(
+                    "keyring",
+                    &format!("Keyring entry is not valid JSON: {}", err),
+                ),
+            },
+            Err(keyring::Error::NoEntry) => logger::log_debug(
+                "keyring",
+                &format!(
+                    "No keyring entry at {}/{}",
+                    KEYRING_SERVICE, KEYRING_ENTRY
+                ),
+            ),
+            Err(err) => logger::log_warn(
+                "keyring",
+                &format!(
+                    "Could not read keyring entry {}/{}: {}",
+                    KEYRING_SERVICE, KEYRING_ENTRY, err
+                ),
+            ),
+        },
+        Err(err) => logger::log_warn("keyring", &format!("Could not open keyring: {}", err)),
     }
+
     let path = cli_token_file()?;
     let raw = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&raw).ok()
+    let parsed: Value = serde_json::from_str(&raw).ok()?;
+    logger::log_debug("keyring", "Read CLI credentials from token file");
+    Some(parsed)
 }
 
 /// Build the credential document for `account`, preserving any unrelated
