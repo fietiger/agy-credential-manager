@@ -16,7 +16,8 @@
         "title": "Agy Credential Manager",
         "width": 800,
         "height": 600,
-        "resizable": true
+        "resizable": true,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-gpu --disable-gpu-compositing"
       }
     ],
     "security": {
