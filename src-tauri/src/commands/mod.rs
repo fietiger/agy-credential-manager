@@ -126,7 +126,10 @@ pub async fn set_active_account(id: String) -> AppResult<()> {
     // Update index
     acc.update_last_used();
     account_store::set_active_account(&id)?;
-    logger::log_info("cmd", &format!("Account {} activated and synced to keyring", id));
+    logger::log_info(
+        "cmd",
+        &format!("Account {} activated and synced to keyring", id),
+    );
     Ok(())
 }
 
@@ -137,8 +140,8 @@ pub async fn set_active_account(id: String) -> AppResult<()> {
 pub async fn start_oauth() -> AppResult<OauthStartResponse> {
     // Pick a random available port
     use std::net::TcpListener as StdTcpListener;
-    let listener = StdTcpListener::bind("127.0.0.1:0")
-        .map_err(|e| AppError::Other(e.to_string()))?;
+    let listener =
+        StdTcpListener::bind("127.0.0.1:0").map_err(|e| AppError::Other(e.to_string()))?;
     let port = listener
         .local_addr()
         .map_err(|e| AppError::Other(e.to_string()))?
@@ -147,16 +150,16 @@ pub async fn start_oauth() -> AppResult<OauthStartResponse> {
 
     // Register as pending
     {
-        let mut tasks = oauth_tasks().lock().map_err(|_| AppError::Other("lock poisoned".into()))?;
+        let mut tasks = oauth_tasks()
+            .lock()
+            .map_err(|_| AppError::Other("lock poisoned".into()))?;
         tasks.insert(port, OauthTaskResult::Pending);
     }
 
     // Spawn the OAuth flow
     let _oauth_task = tokio::spawn(async move {
         let result = oauth::start_oauth_flow(port).await;
-        let mut tasks = oauth_tasks()
-            .lock()
-            .expect("oauth_tasks lock poisoned");
+        let mut tasks = oauth_tasks().lock().expect("oauth_tasks lock poisoned");
         match result {
             Ok(oauth_result) => {
                 let email = oauth_result
@@ -201,15 +204,13 @@ pub fn poll_oauth(port: u16) -> AppResult<OauthPollResponse> {
             error: None,
             account_id: None,
         }),
-        Some(OauthTaskResult::Success(account)) => {
-            Ok(OauthPollResponse {
-                done: true,
-                success: true,
-                message: format!("Successfully added account: {}", account.email),
-                error: None,
-                account_id: Some(account.id.clone()),
-            })
-        }
+        Some(OauthTaskResult::Success(account)) => Ok(OauthPollResponse {
+            done: true,
+            success: true,
+            message: format!("Successfully added account: {}", account.email),
+            error: None,
+            account_id: Some(account.id.clone()),
+        }),
         Some(OauthTaskResult::Failed(msg)) => Ok(OauthPollResponse {
             done: true,
             success: false,
@@ -300,5 +301,3 @@ pub struct OauthPollResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account_id: Option<String>,
 }
-
-

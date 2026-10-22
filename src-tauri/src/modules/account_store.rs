@@ -11,9 +11,11 @@
 //! read/write operation.
 
 use crate::error::{AppError, AppResult};
-use crate::modules::logger;
-use crate::models::account::{Account, AccountExportItem, AccountExportResponse, AccountIndex, AccountSummary};
+use crate::models::account::{
+    Account, AccountExportItem, AccountExportResponse, AccountIndex, AccountSummary,
+};
 use crate::models::token::TokenData;
+use crate::modules::logger;
 use std::path::PathBuf;
 use std::sync::RwLock;
 
@@ -45,7 +47,9 @@ fn account_file(id: &str) -> AppResult<PathBuf> {
 
 /// Read the index, creating it if it does not exist.
 pub fn load_index() -> AppResult<AccountIndex> {
-    let _guard = STORE_LOCK.read().map_err(|_| AppError::Other("store lock poisoned".into()))?;
+    let _guard = STORE_LOCK
+        .read()
+        .map_err(|_| AppError::Other("store lock poisoned".into()))?;
     let path = index_path()?;
     if !path.exists() {
         let idx = AccountIndex::new();
@@ -68,7 +72,9 @@ fn save_index(idx: &AccountIndex) -> AppResult<()> {
 
 /// Atomically read-modify-write the index.
 pub fn update_index<F: FnOnce(&mut AccountIndex)>(f: F) -> AppResult<()> {
-    let guard = STORE_LOCK.write().map_err(|_| AppError::Other("store lock poisoned".into()))?;
+    let guard = STORE_LOCK
+        .write()
+        .map_err(|_| AppError::Other("store lock poisoned".into()))?;
     let _ = &guard; // hold for the whole operation
     let mut idx = load_index_unlocked()?;
     f(&mut idx);
@@ -89,10 +95,7 @@ fn load_index_unlocked() -> AppResult<AccountIndex> {
 pub fn add_account(account: Account) -> AppResult<()> {
     logger::log_info(
         "store",
-        &format!(
-            "Adding account id={} email={}",
-            account.id, account.email
-        ),
+        &format!("Adding account id={} email={}", account.id, account.email),
     );
     // Check for duplicate email
     let idx = load_index()?;

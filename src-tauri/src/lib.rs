@@ -1,10 +1,10 @@
 mod commands;
+mod error;
 mod models;
 mod modules;
-mod error;
 
-use commands::*;
 use crate::modules::logger;
+use commands::*;
 
 pub fn run() {
     // Initialise logger (verbose if AGY_LOG_DEBUG=1)

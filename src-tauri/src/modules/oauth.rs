@@ -23,8 +23,7 @@ use uuid::Uuid;
 // ── Google OAuth constants ────────────────────────────────────────────────
 // These are the public Antigravity OAuth client credentials, embedded in the
 // official Antigravity CLI distribution. They are not secret.
-const CLIENT_ID: &str =
-    "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
+const CLIENT_ID: &str = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const USERINFO_URL: &str = "https://www.googleapis.com/oauth2/v2/userinfo";
@@ -96,11 +95,17 @@ pub async fn start_oauth_flow(port: u16) -> AppResult<OAuthResult> {
             logger::log_error("oauth", &msg);
             AppError::Http(msg)
         })?;
-    logger::log_info("oauth", &format!("Bound OAuth listener to 127.0.0.1:{}", port));
+    logger::log_info(
+        "oauth",
+        &format!("Bound OAuth listener to 127.0.0.1:{}", port),
+    );
 
     // Open the browser (best effort – the user can copy the URL manually).
     if let Err(e) = open(&auth_url) {
-        logger::log_warn("oauth", &format!("Could not open browser: {}. Auth URL: {}", e, auth_url));
+        logger::log_warn(
+            "oauth",
+            &format!("Could not open browser: {}. Auth URL: {}", e, auth_url),
+        );
     } else {
         logger::log_info("oauth", "Browser opened with auth URL");
     }
@@ -128,10 +133,7 @@ pub async fn start_oauth_flow(port: u16) -> AppResult<OAuthResult> {
 
             if first_line.contains("/callback") {
                 // Parse query string from the first line
-                let query = first_line
-                    .split('?')
-                    .nth(1)
-                    .unwrap_or("");
+                let query = first_line.split('?').nth(1).unwrap_or("");
                 let code_opt = extract_param(query, "code");
                 let state_opt = extract_param(query, "state");
                 let error_opt = extract_param(query, "error");
@@ -180,7 +182,10 @@ pub async fn start_oauth_flow(port: u16) -> AppResult<OAuthResult> {
         return Err(AppError::Oauth(msg));
     }
 
-    logger::log_info("oauth", &format!("Received auth code: {}…", &code[..code.len().min(8)]));
+    logger::log_info(
+        "oauth",
+        &format!("Received auth code: {}…", &code[..code.len().min(8)]),
+    );
 
     // Exchange code for tokens
     let raw = exchange_code(&code, &redirect_uri).await?;
@@ -252,7 +257,8 @@ async fn send_http_response(
         404 => "Not Found",
         _ => "Unknown",
     };
-    let resp = format!(
+    let resp =
+        format!(
         "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         status_code, reason, content_type, body.len(), body
     );
@@ -305,10 +311,7 @@ async fn exchange_code(code: &str, redirect_uri: &str) -> AppResult<RawTokenResp
     ];
     let resp = client
         .post(TOKEN_URL)
-        .header(
-            "User-Agent",
-            "AntigravityCLI/1.0 (agy-credential-manager)",
-        )
+        .header("User-Agent", "AntigravityCLI/1.0 (agy-credential-manager)")
         .form(&form)
         .send()
         .await
@@ -326,14 +329,11 @@ async fn exchange_code(code: &str, redirect_uri: &str) -> AppResult<RawTokenResp
         return Err(AppError::Oauth(msg));
     }
 
-    let raw: RawTokenResponse = resp
-        .json()
-        .await
-        .map_err(|e| {
-            let msg = format!("Failed to parse token response: {}", e);
-            logger::log_error("oauth", &msg);
-            AppError::Oauth(msg)
-        })?;
+    let raw: RawTokenResponse = resp.json().await.map_err(|e| {
+        let msg = format!("Failed to parse token response: {}", e);
+        logger::log_error("oauth", &msg);
+        AppError::Oauth(msg)
+    })?;
     logger::log_debug(
         "oauth",
         &format!(
@@ -366,10 +366,10 @@ async fn fetch_email(access_token: &str) -> Option<String> {
 /// Refresh an access token using the refresh_token.
 pub async fn refresh_token(token: &TokenData) -> Result<TokenData, String> {
     let rt_preview = token.refresh_token.chars().take(12).collect::<String>();
-    logger::log_info("oauth", &format!(
-        "Refreshing access token (refresh_token={}…)",
-        rt_preview
-    ));
+    logger::log_info(
+        "oauth",
+        &format!("Refreshing access token (refresh_token={}…)", rt_preview),
+    );
 
     let client = reqwest::Client::new();
     let form = [
@@ -397,14 +397,11 @@ pub async fn refresh_token(token: &TokenData) -> Result<TokenData, String> {
         return Err(msg);
     }
 
-    let raw: RawTokenResponse = resp
-        .json()
-        .await
-        .map_err(|e| {
-            let msg = format!("Failed to parse refresh response: {}", e);
-            logger::log_error("oauth", &msg);
-            msg
-        })?;
+    let raw: RawTokenResponse = resp.json().await.map_err(|e| {
+        let msg = format!("Failed to parse refresh response: {}", e);
+        logger::log_error("oauth", &msg);
+        msg
+    })?;
 
     let email = fetch_email(&raw.access_token).await;
     logger::log_info(
