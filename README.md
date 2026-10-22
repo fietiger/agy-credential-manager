@@ -55,6 +55,13 @@ cargo clippy --all-targets --manifest-path src-tauri/Cargo.toml
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
+本地一键环境与检查（Debian/Ubuntu，含 InstaBox 机器）：
+
+```bash
+./scripts/dev-setup.sh   # 安装系统依赖并检查 Rust 工具链（幂等）
+./scripts/check.sh       # fmt 检查 + clippy 严格模式 + 单元测试 + release 构建
+```
+
 调试日志：设置环境变量 `AGY_LOG_DEBUG=1` 后再启动应用，可输出 debug 级别日志。
 
 ## 项目结构
