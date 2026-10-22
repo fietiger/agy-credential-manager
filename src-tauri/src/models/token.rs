@@ -87,3 +87,66 @@ impl TokenData {
         chrono::Utc::now().timestamp() < self.expiry_timestamp - 60
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn token(access: &str, refresh: &str, expires_in: i64) -> TokenData {
+        TokenData::new(
+            access.to_string(),
+            refresh.to_string(),
+            expires_in,
+            None,
+            None,
+            None,
+            false,
+            None,
+        )
+    }
+
+    #[test]
+    fn new_sets_bearer_and_expiry() {
+        let before = chrono::Utc::now().timestamp();
+        let t = token("access", "refresh", 3600);
+        assert_eq!(t.token_type, "Bearer");
+        assert!(t.expiry_timestamp >= before + 3600);
+        assert!(t.expiry_timestamp <= chrono::Utc::now().timestamp() + 3600);
+    }
+
+    #[test]
+    fn masks_long_tokens() {
+        let t = token("abcd1234wxyz", "refr5678qwer", 3600);
+        assert_eq!(t.masked_access_token(), "abcd...wxyz");
+        assert_eq!(t.masked_refresh_token(), "refr...qwer");
+    }
+
+    #[test]
+    fn masks_short_tokens_fully() {
+        let t = token("short", "tiny", 3600);
+        assert_eq!(t.masked_access_token(), "****");
+        assert_eq!(t.masked_refresh_token(), "****");
+        // exactly 8 chars is still fully masked
+        let edge = token("12345678", "87654321", 3600);
+        assert_eq!(edge.masked_access_token(), "****");
+    }
+
+    #[test]
+    fn validity_respects_expiry_and_buffer() {
+        assert!(token("a", "r", 3600).is_access_token_valid());
+        assert!(!token("a", "r", -10).is_access_token_valid());
+        // inside the 60-second safety buffer counts as invalid
+        assert!(!token("a", "r", 30).is_access_token_valid());
+    }
+
+    #[test]
+    fn serde_roundtrip() {
+        let t = token("access-token", "refresh-token", 3600);
+        let json = serde_json::to_string(&t).unwrap();
+        let back: TokenData = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.access_token, "access-token");
+        assert_eq!(back.refresh_token, "refresh-token");
+        // optional fields are omitted when None
+        assert!(!json.contains("project_id"));
+    }
+}
