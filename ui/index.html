@@ -52,6 +52,16 @@
     .oauth-msg.success { color: #4ade80; }
     .oauth-msg.error { color: #f87171; }
     .oauth-msg.pending { color: #facc15; }
+
+    .oauth-primary { width: 100%; padding: 12px; font-size: 0.95rem; font-weight: 600; margin-top: 10px; }
+    .oauth-desc { margin-top: 8px; font-size: 0.8rem; color: #ccc; }
+    .oauth-link-label { margin-top: 14px; font-size: 0.75rem; color: #94a3b8; }
+    .oauth-link-row { display: flex; gap: 8px; align-items: stretch; margin-top: 6px; }
+    .oauth-link-row .oauth-url { flex: 1; margin-top: 0; cursor: default; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .oauth-wide { width: 100%; margin-top: 10px; }
+    .oauth-divider { margin-top: 16px; font-size: 0.75rem; color: #94a3b8; }
+    .oauth-manual-row { display: flex; gap: 8px; margin-top: 6px; }
+    .oauth-manual-row input { flex: 1; background: #0f3460; border: 1px solid #1a4a7a; border-radius: 6px; padding: 9px; color: #e2e8f0; font-size: 0.8rem; }
     .import-section {
       background: #16213e; border: 1px solid #0f3460; border-radius: 8px;
       padding: 16px; margin-bottom: 20px; display: none;
@@ -93,12 +103,26 @@
     </div>
 
     <div class="oauth-section" id="oauth-section">
-      <strong>OAuth in progress</strong>
-      <div style="margin-top:8px; font-size:0.8rem; color:#ccc;">
-        Your browser should have opened the Google consent screen. If not, click the URL below:
+      <strong>Add account · OAuth authorization</strong>
+      <div class="oauth-desc">
+        Recommended: this opens your default browser to sign in with Google
+        and authorize. The token is then fetched and saved automatically.
       </div>
-      <div class="oauth-url" id="oauth-url"></div>
-      <div class="oauth-msg" id="oauth-msg">Waiting for authorization…</div>
+      <button class="oauth-primary" id="btn-oauth-start">Start OAuth authorization</button>
+      <div class="oauth-link-label">Authorization link</div>
+      <div class="oauth-link-row">
+        <div class="oauth-url" id="oauth-url" title=""></div>
+        <button class="secondary" id="btn-oauth-copy">Copy link</button>
+      </div>
+      <button class="secondary oauth-wide" id="btn-oauth-complete">✓ I've authorized, continue</button>
+      <div class="oauth-divider">
+        Browser didn't redirect back? Paste the callback link or AUTHORIZATION CODE:
+      </div>
+      <div class="oauth-manual-row">
+        <input id="input-oauth-code" placeholder="Paste callback link or code…">
+        <button class="secondary" id="btn-oauth-submit">Submit</button>
+      </div>
+      <div class="oauth-msg" id="oauth-msg"></div>
       <div style="margin-top:10px;">
         <button class="secondary" id="btn-oauth-cancel">Cancel</button>
       </div>
@@ -125,8 +149,6 @@
 
     // ── helpers ────────────────────────────────────────────────────────────
     const $ = id => document.getElementById(id);
-    let pollTimer = null;
-    let oauthPort = null;
 
     function fmtTs(ts) {
       if (!ts) return '—';
@@ -260,43 +282,94 @@
       }
     }
 
-    // ── OAuth flow ────────────────────────────────────────────────────────
-    async function startOAuth() {
+    // ── OAuth flow (Antigravity-Manager style) ─────────────────────────
+    let oauthBusy = false;
+
+    function oauthMsg(kind, text) {
+      const msg = $('oauth-msg');
+      msg.className = 'oauth-msg' + (kind ? ' ' + kind : '');
+      msg.textContent = text;
+    }
+
+    function setOauthBusy(busy) {
+      oauthBusy = busy;
+      $('btn-oauth-start').disabled = busy;
+      $('btn-oauth-complete').disabled = busy;
+    }
+
+    async function openOAuthPanel() {
       $('oauth-section').classList.add('show');
-      $('oauth-msg').className = 'oauth-msg pending';
-      $('oauth-msg').textContent = 'Starting OAuth…';
+      oauthMsg('pending', 'Preparing authorization link…');
       try {
-        const res = await invoke('start_oauth');
-        oauthPort = res.port;
-        $('oauth-url').textContent = res.auth_url;
-        $('oauth-url').onclick = () => {
-          window.open(res.auth_url, '_blank');
-        };
-        // poll every 2s
-        clearInterval(pollTimer);
-        pollTimer = setInterval(async () => {
-          const p = await invoke('poll_oauth', { port: oauthPort });
-          if (p.done) {
-            clearInterval(pollTimer);
-            $('oauth-section').classList.remove('show');
-            if (p.success) {
-              alert('Account added: ' + p.message);
-            } else {
-              alert('OAuth failed: ' + (p.error || 'unknown error'));
-            }
-            refresh();
-          }
-        }, 2000);
+        const url = await invoke('oauth_prepare');
+        $('oauth-url').textContent = url;
+        $('oauth-url').title = url;
+        oauthMsg('', 'Authorize in the opened browser, or copy the link into a browser signed in to Google.');
       } catch (e) {
-        clearInterval(pollTimer);
-        $('oauth-section').classList.remove('show');
-        alert('Failed to start OAuth: ' + e);
+        oauthMsg('error', 'Failed to prepare OAuth: ' + e);
       }
     }
 
-    function cancelOAuth() {
-      clearInterval(pollTimer);
+    async function copyOAuthUrl() {
+      const url = $('oauth-url').textContent.trim();
+      if (!url) return;
+      try {
+        await navigator.clipboard.writeText(url);
+      } catch (_) {
+        const ta = document.createElement('textarea');
+        ta.value = url;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+      }
+      const btn = $('btn-oauth-copy');
+      const old = btn.textContent;
+      btn.textContent = 'Copied ✓';
+      setTimeout(() => { btn.textContent = old; }, 1500);
+    }
+
+    async function runOAuthWait(command) {
+      setOauthBusy(true);
+      oauthMsg('pending', 'Waiting for authorization…');
+      try {
+        const acc = await invoke(command);
+        oauthMsg('success', 'Account added: ' + acc.email);
+        setTimeout(() => {
+          $('oauth-section').classList.remove('show');
+          $('input-oauth-code').value = '';
+          refresh();
+        }, 1200);
+      } catch (e) {
+        oauthMsg('error', 'OAuth failed: ' + e);
+      } finally {
+        setOauthBusy(false);
+      }
+    }
+
+    async function submitOAuthCode() {
+      const input = $('input-oauth-code').value.trim();
+      if (!input) { oauthMsg('error', 'Paste the callback link or code first.'); return; }
+      try {
+        await invoke('oauth_submit_code', { code: input });
+        $('input-oauth-code').value = '';
+        if (oauthBusy) {
+          oauthMsg('pending', 'Code submitted, finishing…');
+        } else {
+          oauthMsg('success', 'Code submitted. Completing…');
+          runOAuthWait('oauth_complete');
+        }
+      } catch (e) {
+        oauthMsg('error', 'Submit failed: ' + e);
+      }
+    }
+
+    async function cancelOAuth() {
+      try { await invoke('oauth_cancel'); } catch (_) {}
+      setOauthBusy(false);
       $('oauth-section').classList.remove('show');
+      $('input-oauth-code').value = '';
+      oauthMsg('', '');
       refresh();
     }
 
@@ -404,8 +477,12 @@
     }
 
     // ── wire up buttons ─────────────────────────────────────────────────
-    $('btn-add-oauth').onclick = startOAuth;
+    $('btn-add-oauth').onclick = openOAuthPanel;
     $('btn-oauth-cancel').onclick = cancelOAuth;
+    $('btn-oauth-start').onclick = () => runOAuthWait('oauth_start');
+    $('btn-oauth-complete').onclick = () => runOAuthWait('oauth_complete');
+    $('btn-oauth-copy').onclick = copyOAuthUrl;
+    $('btn-oauth-submit').onclick = submitOAuthCode;
     $('btn-add-manual').onclick = () => $('import-section').classList.toggle('show');
     $('btn-import-ok').onclick = importManual;
     $('btn-import-cancel').onclick = () => {

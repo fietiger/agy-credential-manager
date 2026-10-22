@@ -8,26 +8,7 @@ use crate::modules::client_sync;
 use crate::modules::local_import;
 use crate::modules::logger;
 use crate::modules::oauth;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-
-// ── Shared state for in-flight OAuth tasks ───────────────────────────────
-
-/// Result of a completed OAuth task.
-enum OauthTaskResult {
-    Pending,
-    Success(Box<Account>),
-    Failed(String),
-}
-
-/// Global map of in-flight OAuth tasks, keyed by port number.
-static OAUTH_TASKS: std::sync::OnceLock<Arc<Mutex<HashMap<u16, OauthTaskResult>>>> =
-    std::sync::OnceLock::new();
-
-fn oauth_tasks() -> &'static Arc<Mutex<HashMap<u16, OauthTaskResult>>> {
-    OAUTH_TASKS.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
-}
+use serde::Serialize;
 
 // ── DTO types returned to the frontend ───────────────────────────────────
 
@@ -305,99 +286,52 @@ pub fn list_clients() -> AppResult<Vec<client_sync::ClientStatus>> {
     Ok(out)
 }
 
-/// Start the OAuth flow.
-/// Returns the auth URL and the local callback port.
-/// The frontend should open the auth_url in the browser, then poll `poll_oauth(port)`.
+/// Prepare the OAuth flow and return the authorization URL.
+/// The URL is shown in the UI (with a Copy button) before anything opens, so
+/// the user can authorize in any browser where they are signed in to Google.
+/// Listeners start now, so an early authorization is not lost.
 #[tauri::command]
-pub async fn start_oauth() -> AppResult<OauthStartResponse> {
-    // Pick a random available port
-    use std::net::TcpListener as StdTcpListener;
-    let listener =
-        StdTcpListener::bind("127.0.0.1:0").map_err(|e| AppError::Other(e.to_string()))?;
-    let port = listener
-        .local_addr()
-        .map_err(|e| AppError::Other(e.to_string()))?
-        .port();
-    drop(listener);
-
-    // Register as pending
-    {
-        let mut tasks = oauth_tasks()
-            .lock()
-            .map_err(|_| AppError::Other("lock poisoned".into()))?;
-        tasks.insert(port, OauthTaskResult::Pending);
-    }
-
-    // Spawn the OAuth flow
-    let _oauth_task = tokio::spawn(async move {
-        let result = oauth::start_oauth_flow(port).await;
-        let mut tasks = oauth_tasks().lock().expect("oauth_tasks lock poisoned");
-        match result {
-            Ok(oauth_result) => {
-                let email = oauth_result
-                    .email
-                    .clone()
-                    .unwrap_or_else(|| "unknown".to_string());
-                let id = uuid::Uuid::new_v4().to_string();
-                let account = Account::new(id, email, oauth_result.token);
-                match account_store::add_account(account.clone()) {
-                    Ok(_) => {
-                        tasks.insert(port, OauthTaskResult::Success(Box::new(account)));
-                    }
-                    Err(e) => {
-                        tasks.insert(port, OauthTaskResult::Failed(e.to_string()));
-                    }
-                }
-            }
-            Err(e) => {
-                tasks.insert(port, OauthTaskResult::Failed(e.to_string()));
-            }
-        }
-    });
-
-    Ok(OauthStartResponse {
-        port,
-        auth_url: oauth::build_auth_url(port),
-    })
+pub async fn oauth_prepare() -> AppResult<String> {
+    oauth::prepare_oauth().await
 }
 
-/// Poll for OAuth completion on the given port.
+/// Start OAuth: opens the default browser and waits for the code (via the
+/// loopback callback or a manual submission), then stores the account.
 #[tauri::command]
-pub fn poll_oauth(port: u16) -> AppResult<OauthPollResponse> {
-    let tasks = oauth_tasks()
-        .lock()
-        .map_err(|_| AppError::Other("oauth_tasks lock poisoned".into()))?;
+pub async fn oauth_start() -> AppResult<AccountView> {
+    finish_oauth(oauth::wait_for_oauth(true).await?)
+}
 
-    match tasks.get(&port) {
-        Some(OauthTaskResult::Pending) => Ok(OauthPollResponse {
-            done: false,
-            success: false,
-            message: String::new(),
-            error: None,
-            account_id: None,
-        }),
-        Some(OauthTaskResult::Success(account)) => Ok(OauthPollResponse {
-            done: true,
-            success: true,
-            message: format!("Successfully added account: {}", account.email),
-            error: None,
-            account_id: Some(account.id.clone()),
-        }),
-        Some(OauthTaskResult::Failed(msg)) => Ok(OauthPollResponse {
-            done: true,
-            success: false,
-            message: String::new(),
-            error: Some(msg.clone()),
-            account_id: None,
-        }),
-        None => Ok(OauthPollResponse {
-            done: true,
-            success: false,
-            message: String::new(),
-            error: Some("No OAuth task found for this port".to_string()),
-            account_id: None,
-        }),
-    }
+/// Complete OAuth without opening the browser: the user authorized through
+/// the copied link in their preferred browser; just wait for the code.
+#[tauri::command]
+pub async fn oauth_complete() -> AppResult<AccountView> {
+    finish_oauth(oauth::wait_for_oauth(false).await?)
+}
+
+/// Manually submit an authorization code (or a full callback link) — for
+/// when the browser redirect could not reach this machine.
+#[tauri::command]
+pub async fn oauth_submit_code(code: String) -> AppResult<()> {
+    oauth::submit_oauth_code(&code).await
+}
+
+/// Cancel the active OAuth flow.
+#[tauri::command]
+pub fn oauth_cancel() -> AppResult<()> {
+    oauth::cancel_oauth();
+    Ok(())
+}
+
+fn finish_oauth(result: oauth::OAuthResult) -> AppResult<AccountView> {
+    let email = result
+        .email
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
+    let id = uuid::Uuid::new_v4().to_string();
+    let account = Account::new(id, email, result.token);
+    account_store::add_account(account.clone())?;
+    Ok(AccountView::from(&account))
 }
 
 /// Import an account by pasting a refresh token directly.
@@ -473,20 +407,3 @@ pub fn open_log_dir() -> AppResult<()> {
 }
 
 // ── supporting types ──────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OauthStartResponse {
-    pub port: u16,
-    pub auth_url: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OauthPollResponse {
-    pub done: bool,
-    pub success: bool,
-    pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub account_id: Option<String>,
-}
