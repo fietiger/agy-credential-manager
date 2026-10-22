@@ -333,14 +333,15 @@ fn percent_decode(s: &str) -> String {
 async fn exchange_code(code: &str, redirect_uri: &str) -> AppResult<RawTokenResponse> {
     logger::log_info("oauth", "Exchanging authorization code for token…");
     let client = reqwest::Client::new();
-    let mut form: Vec<(&str, String)> = vec![
-        ("client_id", CLIENT_ID.to_string()),
-        ("code", code.to_string()),
-        ("redirect_uri", redirect_uri.to_string()),
-        ("grant_type", "authorization_code".to_string()),
-    ];
+    // A map (not a Vec of tuples) so the form encoder always produces
+    // `client_id=…&code=…` regardless of the pair count.
+    let mut form: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
+    form.insert("client_id", CLIENT_ID.to_string());
+    form.insert("code", code.to_string());
+    form.insert("redirect_uri", redirect_uri.to_string());
+    form.insert("grant_type", "authorization_code".to_string());
     if let Some(secret) = client_secret() {
-        form.push(("client_secret", secret));
+        form.insert("client_secret", secret);
     }
     let resp = client
         .post(TOKEN_URL)
@@ -405,13 +406,12 @@ pub async fn refresh_token(token: &TokenData) -> Result<TokenData, String> {
     );
 
     let client = reqwest::Client::new();
-    let mut form: Vec<(&str, String)> = vec![
-        ("client_id", CLIENT_ID.to_string()),
-        ("grant_type", "refresh_token".to_string()),
-        ("refresh_token", token.refresh_token.clone()),
-    ];
+    let mut form: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
+    form.insert("client_id", CLIENT_ID.to_string());
+    form.insert("grant_type", "refresh_token".to_string());
+    form.insert("refresh_token", token.refresh_token.clone());
     if let Some(secret) = client_secret() {
-        form.push(("client_secret", secret));
+        form.insert("client_secret", secret);
     }
     let resp = client
         .post(TOKEN_URL)
