@@ -4,6 +4,7 @@ use crate::error::{AppError, AppResult};
 use crate::models::account::{Account, AccountExportResponse};
 use crate::modules::account_store;
 use crate::modules::agy_sync;
+use crate::modules::client_sync;
 use crate::modules::logger;
 use crate::modules::oauth;
 use serde::{Deserialize, Serialize};
@@ -118,36 +119,125 @@ pub fn delete_account(id: String) -> AppResult<()> {
 
 /// Activate an account: refresh its token and write it to the keyring.
 #[tauri::command]
-pub async fn set_active_account(id: String) -> AppResult<()> {
+pub async fn set_active_account(id: String) -> AppResult<ActivationResult> {
     logger::log_info("cmd", &format!("Activating account id={}", id));
     let mut acc = account_store::get_account_with_refresh(&id).await?;
-    // Write to keyring
-    agy_sync::sync_to_keyring(&acc)?;
-    // Read back and verify the stored token matches the activated account
-    match agy_sync::verify_keyring(&acc.token.access_token) {
-        Ok(true) => {}
-        Ok(false) => {
-            let msg =
-                "Keyring verification failed: stored token does not match the activated account"
-                    .to_string();
-            logger::log_error("cmd", &msg);
-            return Err(AppError::Keyring(msg));
-        }
-        Err(e) => {
-            logger::log_warn(
-                "cmd",
-                &format!("Keyring verification could not be performed: {}", e),
-            );
-        }
-    }
+
+    // Sync to the agy CLI keyring. A keyring failure (e.g. no Secret
+    // Service running) is reported as this client's result instead of
+    // aborting the whole switch, so the desktop clients still get synced.
+    let cli_result = match agy_sync::sync_to_keyring(&acc) {
+        Ok(()) => match agy_sync::verify_keyring(&acc.token.access_token) {
+            Ok(true) => client_sync::ClientSyncResult {
+                client: client_sync::ClientKind::AgyCli,
+                name: client_sync::ClientKind::AgyCli.name().to_string(),
+                ok: true,
+                detail: format!(
+                    "keyring {}/{} synced + verified",
+                    agy_sync::KEYRING_SERVICE,
+                    agy_sync::KEYRING_ENTRY
+                ),
+            },
+            Ok(false) => client_sync::ClientSyncResult {
+                client: client_sync::ClientKind::AgyCli,
+                name: client_sync::ClientKind::AgyCli.name().to_string(),
+                ok: false,
+                detail: "keyring verification failed: stored token does not match".to_string(),
+            },
+            Err(e) => {
+                logger::log_warn(
+                    "cmd",
+                    &format!("Keyring verification could not be performed: {}", e),
+                );
+                client_sync::ClientSyncResult {
+                    client: client_sync::ClientKind::AgyCli,
+                    name: client_sync::ClientKind::AgyCli.name().to_string(),
+                    ok: true,
+                    detail: format!(
+                        "keyring {}/{} synced (verify unavailable)",
+                        agy_sync::KEYRING_SERVICE,
+                        agy_sync::KEYRING_ENTRY
+                    ),
+                }
+            }
+        },
+        Err(e) => client_sync::ClientSyncResult {
+            client: client_sync::ClientKind::AgyCli,
+            name: client_sync::ClientKind::AgyCli.name().to_string(),
+            ok: false,
+            detail: format!("keyring sync failed: {}", e),
+        },
+    };
+
     // Update index
     acc.update_last_used();
     account_store::set_active_account(&id)?;
+
+    // Sync into every installed desktop client (classic + IDE state DBs)
+    let mut clients = vec![cli_result];
+    clients.extend(client_sync::sync_db_clients(&acc));
+    for r in &clients {
+        logger::log_info(
+            "cmd",
+            &format!("client {}: ok={} {}", r.name, r.ok, r.detail),
+        );
+    }
     logger::log_info(
         "cmd",
-        &format!("Account {} activated and synced to keyring", id),
+        &format!("Account {} activated and synced to clients", id),
     );
-    Ok(())
+    Ok(ActivationResult {
+        account_id: id,
+        email: acc.email.clone(),
+        clients,
+    })
+}
+
+/// Result of activating an account: which clients received it.
+#[derive(serde::Serialize)]
+pub struct ActivationResult {
+    pub account_id: String,
+    pub email: String,
+    pub clients: Vec<client_sync::ClientSyncResult>,
+}
+
+/// Detect installed Antigravity clients and the account each one is
+/// currently signed in with.
+#[tauri::command]
+pub fn list_clients() -> AppResult<Vec<client_sync::ClientStatus>> {
+    let mut out = Vec::new();
+
+    // agy CLI: sign-in state is the keyring token, which this app syncs
+    // from the active account, so report the active account's email.
+    let idx = account_store::load_index()?;
+    let cli_email = idx
+        .current_agy_account_id
+        .as_ref()
+        .and_then(|id| account_store::get_account(id).ok())
+        .map(|a| a.email);
+    out.push(client_sync::ClientStatus {
+        client: client_sync::ClientKind::AgyCli,
+        name: client_sync::ClientKind::AgyCli.name().to_string(),
+        installed: client_sync::agy_cli_on_path(),
+        db_path: None,
+        current_email: cli_email,
+    });
+
+    for kind in [
+        client_sync::ClientKind::Classic,
+        client_sync::ClientKind::Ide,
+    ] {
+        let db_path = client_sync::installed_db_path(kind);
+        let current_email = db_path.as_ref().and_then(client_sync::read_client_email);
+        out.push(client_sync::ClientStatus {
+            client: kind,
+            name: kind.name().to_string(),
+            installed: db_path.is_some(),
+            db_path: db_path.map(|p| p.to_string_lossy().to_string()),
+            current_email,
+        });
+    }
+    Ok(out)
 }
 
 /// Start the OAuth flow.

@@ -63,6 +63,10 @@
       margin-top: 8px;
     }
     .empty { text-align: center; color: #555; padding: 40px; font-size: 0.9rem; }
+    .clients-section { margin-top: 18px; border: 1px solid #2b2b4d; border-radius: 8px; padding: 12px 14px; }
+    .client-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; font-size: 0.85rem; color: #ddd; }
+    .client-badge { font-size: 0.72rem; padding: 2px 8px; border-radius: 10px; background: #274d27; color: #a5dba5; white-space: nowrap; }
+    .client-badge.off { background: #34344a; color: #999; }
   </style>
 </head>
 <body>
@@ -80,6 +84,12 @@
       <input type="file" id="input-import-file" accept=".json,application/json" style="display:none" />
     </div>
     <div class="oauth-msg" id="file-msg"></div>
+    <div class="oauth-msg" id="activate-msg"></div>
+
+    <div class="clients-section" id="clients-section">
+      <strong>Clients</strong>
+      <div id="client-list" style="margin-top:6px;"></div>
+    </div>
 
     <div class="oauth-section" id="oauth-section">
       <strong>OAuth in progress</strong>
@@ -136,8 +146,11 @@
           `<div style="margin-top:6px; word-break:break-all;"><strong>Logs:</strong> ` +
           `${escapeHtml(status.log_dir)} ` +
           `<button class="secondary" style="padding:2px 8px; font-size:0.75rem;" ` +
-          `onclick="openLogs()">Open</button></div>`;
+          `id="btn-open-logs">Open</button></div>`;
         renderAccounts(accounts, status.active_account_id);
+        const logsBtn = $('btn-open-logs');
+        if (logsBtn) logsBtn.onclick = openLogs;
+        renderClients();
       } catch (e) {
         console.error(e);
         $('status-bar').textContent = `Error: ${e}`;
@@ -172,8 +185,8 @@
           <div style="display:flex; gap:6px; align-items:center;">
             ${a.is_active
               ? '<span class="badge active">active</span>'
-              : `<button class="secondary" onclick="activate('${a.id}')">Activate</button>`}
-            <button class="danger" onclick="removeAccount('${a.id}')">Remove</button>
+              : `<button class="secondary" data-action="activate" data-id="${a.id}">Activate</button>`}
+            <button class="danger" data-action="remove" data-id="${a.id}">Remove</button>
           </div>
         </div>
       `).join('');
@@ -185,13 +198,35 @@
       return div.innerHTML;
     }
 
+    // ── clients ─────────────────────────────────────────────────────────
+    async function renderClients() {
+      try {
+        const clients = await invoke('list_clients');
+        $('client-list').innerHTML = clients.map(c => `
+          <div class="client-row">
+            <span>${escapeHtml(c.name)}${c.current_email ? ' — ' + escapeHtml(c.current_email) : ''}</span>
+            <span class="client-badge ${c.installed ? '' : 'off'}">${c.installed ? 'installed' : 'not installed'}</span>
+          </div>`).join('');
+      } catch (e) { /* non-fatal */ }
+    }
+
     // ── activate ──────────────────────────────────────────────────────────
     async function activate(id) {
+      const msg = $('activate-msg');
+      msg.className = 'oauth-msg pending';
+      msg.textContent = 'Switching account…';
       try {
-        await invoke('set_active_account', { id });
+        const r = await invoke('set_active_account', { id });
+        const summary = r.clients.map(c =>
+          c.ok ? `${c.name} ✓`
+               : (c.detail === 'not installed' ? `${c.name} (not installed)` : `${c.name} ✗ ${c.detail}`)
+        ).join(' · ');
+        msg.className = 'oauth-msg success';
+        msg.textContent = `Switched to ${r.email} — ${summary}`;
         refresh();
       } catch (e) {
-        alert('Failed to activate: ' + e);
+        msg.className = 'oauth-msg error';
+        msg.textContent = 'Failed to activate: ' + e;
       }
     }
 
@@ -322,6 +357,14 @@
       $('import-msg').textContent = '';
     };
     $('btn-export').onclick = exportJson;
+    // NOTE: inline onclick attributes are blocked by the production CSP,
+    // so list buttons use data-action + this delegated listener.
+    $('account-list').addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-action]');
+      if (!btn) return;
+      if (btn.dataset.action === 'activate') activate(btn.dataset.id);
+      if (btn.dataset.action === 'remove') removeAccount(btn.dataset.id);
+    });
     $('btn-import-file').onclick = () => $('input-import-file').click();
     $('input-import-file').onchange = importFile;
 

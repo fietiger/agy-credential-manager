@@ -31,6 +31,7 @@ pub fn run() {
             poll_oauth,
             import_refresh_token,
             import_accounts_json,
+            list_clients,
             // status
             get_status,
             // export

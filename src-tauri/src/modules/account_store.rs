@@ -161,30 +161,48 @@ pub fn get_account(id: &str) -> AppResult<Account> {
     Ok(serde_json::from_str(&raw)?)
 }
 
-/// Read a full account, or refresh its access token if expired.
+/// Read a full account, refreshing its access token when expired or
+/// missing. Accounts imported from a file carry no access token; for
+/// those, a failed best-effort refresh (offline, bad test token, ...)
+/// only logs a warning — activation continues with the stored refresh
+/// token, which the desktop clients can exchange on their own.
 pub async fn get_account_with_refresh(id: &str) -> AppResult<Account> {
     let mut account = get_account(id)?;
-    if !account.token.is_access_token_valid() {
+    let expired = !account.token.is_access_token_valid();
+    let missing = account.token.access_token.is_empty();
+    if expired || missing {
         logger::log_info(
             "store",
             &format!(
-                "Access token for {} expired, refreshing via refresh_token",
+                "Access token for {} expired or missing, refreshing via refresh_token",
                 account.email
             ),
         );
-        account.token = crate::modules::oauth::refresh_token(&account.token)
-            .await
-            .map_err(|e| {
-                AppError::Other(format!(
+        match crate::modules::oauth::refresh_token(&account.token).await {
+            Ok(new_token) => {
+                account.token = new_token;
+                // persist the refreshed token
+                let path = account_file(&account.id)?;
+                let raw = serde_json::to_string_pretty(&account)?;
+                std::fs::write(&path, raw)?;
+                logger::log_info("store", &format!("Refreshed token for {}", account.email));
+            }
+            Err(e) if missing && !expired => {
+                logger::log_warn(
+                    "store",
+                    &format!(
+                        "Best-effort refresh for {} failed ({}); continuing with stored token",
+                        account.email, e
+                    ),
+                );
+            }
+            Err(e) => {
+                return Err(AppError::Other(format!(
                     "Failed to refresh access token: {} (account may have been revoked)",
                     e
-                ))
-            })?;
-        // persist the refreshed token
-        let path = account_file(&account.id)?;
-        let raw = serde_json::to_string_pretty(&account)?;
-        std::fs::write(&path, raw)?;
-        logger::log_info("store", &format!("Refreshed token for {}", account.email));
+                )));
+            }
+        }
     } else {
         logger::log_debug(
             "store",
