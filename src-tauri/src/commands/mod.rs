@@ -225,18 +225,20 @@ pub struct ActivationResult {
 pub fn list_clients() -> AppResult<Vec<client_sync::ClientStatus>> {
     let mut out = Vec::new();
 
-    // agy CLI: sign-in state is the keyring token, which this app syncs
-    // from the active account, so report the active account's email.
+    // agy CLI: read the account the CLI itself is signed in with, so an
+    // account added outside this app is still reported correctly. Fall back
+    // to our own index slot when the CLI credential is unreadable.
     let idx = account_store::load_index()?;
-    let cli_email = idx
-        .current_agy_account_id
-        .as_ref()
-        .and_then(|id| account_store::get_account(id).ok())
-        .map(|a| a.email);
+    let cli_email = agy_sync::read_cli_account().map(|a| a.email).or_else(|| {
+        idx.current_agy_account_id
+            .as_ref()
+            .and_then(|id| account_store::get_account(id).ok())
+            .map(|a| a.email)
+    });
     out.push(client_sync::ClientStatus {
         client: client_sync::ClientKind::AgyCli,
         name: client_sync::ClientKind::AgyCli.name().to_string(),
-        installed: client_sync::agy_cli_on_path(),
+        installed: client_sync::agy_cli_on_path() || agy_sync::cli_state_present(),
         db_path: None,
         current_email: cli_email,
     });
