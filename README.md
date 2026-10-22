@@ -9,6 +9,7 @@
 - **多账号管理**：添加、删除多个账号，列表展示邮箱、标签、状态与掩码后的 token
 - **Google OAuth 登录**：内置 OAuth 流程（本地回调），登录成功后自动保存凭证
 - **导入 refresh token**：已有 refresh token 时可直接导入生成账号
+- **一键导入本地账号**：读取本机三个客户端当前登录的凭证（agy CLI 的 keyring、Antigravity 与 Antigravity IDE 的 `state.vscdb`），一键收进管理器统一管理；按邮箱与 refresh token 去重，重复的只跳过不报错，每个客户端的处理结果（已导入 / 已存在 / 未登录 / 读不到邮箱）都会显示出来
 - **文件批量导入**：可直接导入 Antigravity-Manager 导出的 JSON 文件（裸数组 `[{email, refresh_token}]`），也兼容本应用自己的导出格式；自动跳过无效条目与重复账号并报告数量，邮箱取自文件、不会显示 unknown
 - **一键切换账号**：将账号设为活跃时，把它的凭证按 agy CLI 的格式写入系统 keyring（service `gemini` / entry `antigravity`，同时更新 `~/.gemini/antigravity-cli/antigravity-oauth-token`），agy CLI 下次启动即使用该账号；写入后会读回校验
 - **多客户端切换（逐客户端选择）**：每个账号可分别切入指定客户端——agy CLI（系统 keyring）、Antigravity 经典版、Antigravity IDE（各自 `state.vscdb` 的 unified state 格式注入，含 token、`authStateWithContext` 登录态、userStatus 与项目偏好）；每个客户端独立保存自己的当前账号、互不影响（与 Antigravity-Manager 相同的模型）；账号卡上的徽章显示该账号正被哪些客户端使用，界面 Clients 区显示每个客户端的安装状态、登录态（`signed in` / `signed out` / `no account`）与当前登录邮箱。写入后立即回读校验：客户端在运行中把自己的内存状态写回、吞掉了这次切换时，会直接报错并提示先关闭客户端，而不是假装成功

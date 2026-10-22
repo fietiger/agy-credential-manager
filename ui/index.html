@@ -81,6 +81,7 @@
       <button class="secondary" id="btn-add-manual">Add Refresh Token</button>
       <button class="secondary" id="btn-export">Export JSON</button>
       <button class="secondary" id="btn-import-file">Import JSON</button>
+      <button class="secondary" id="btn-import-local" title="Read the accounts agy CLI / Antigravity / Antigravity IDE are signed in with">Import from clients</button>
       <input type="file" id="input-import-file" accept=".json,application/json" style="display:none" />
     </div>
     <div class="oauth-msg" id="file-msg"></div>
@@ -349,6 +350,43 @@
       }
     }
 
+    // ── import from local clients (agy CLI / Antigravity / IDE) ──────────
+    const CLIENT_STATUS_TEXT = {
+      imported: 'imported',
+      duplicate: 'already added',
+      no_credential: 'not signed in',
+      no_email: 'no email found',
+      failed: 'failed',
+    };
+
+    async function importFromClients() {
+      const msg = $('file-msg');
+      msg.className = 'oauth-msg pending';
+      msg.textContent = 'Reading accounts from local clients…';
+      try {
+        const s = await invoke('import_local_accounts');
+        const parts = [];
+        if (s.imported) parts.push(`imported ${s.imported}`);
+        if (s.skipped_duplicate) parts.push(`skipped ${s.skipped_duplicate} duplicate(s)`);
+        if (!s.imported && !s.skipped_duplicate) parts.push('nothing new to add');
+
+        const detail = s.clients.map(c => {
+          const label = CLIENT_STATUS_TEXT[c.status] || c.status;
+          const who = c.email ? ` ${c.email}` : '';
+          const extra = c.status === 'failed' && c.detail ? `: ${c.detail}` : '';
+          return `${c.client}${who} — ${label}${extra}`;
+        }).join(' · ');
+
+        msg.className = s.imported ? 'oauth-msg success' : 'oauth-msg';
+        msg.textContent = `${parts.join(', ')}${detail ? ' — ' + detail : ''}`;
+        if (s.imported) refresh();
+        else renderClients();
+      } catch (e) {
+        msg.className = 'oauth-msg error';
+        msg.textContent = 'Import failed: ' + e;
+      }
+    }
+
     // ── export ───────────────────────────────────────────────────────────
     async function exportJson() {
       try {
@@ -385,6 +423,7 @@
     });
     $('btn-import-file').onclick = () => $('input-import-file').click();
     $('input-import-file').onchange = importFile;
+    $('btn-import-local').onclick = importFromClients;
 
     // initial load
     refresh();

@@ -5,6 +5,7 @@ use crate::models::account::{Account, AccountExportResponse};
 use crate::modules::account_store;
 use crate::modules::agy_sync;
 use crate::modules::client_sync;
+use crate::modules::local_import;
 use crate::modules::logger;
 use crate::modules::oauth;
 use serde::{Deserialize, Serialize};
@@ -424,6 +425,14 @@ pub fn import_refresh_token(
 pub fn import_accounts_json(content: String) -> AppResult<account_store::ImportSummary> {
     logger::log_info("cmd", "Importing accounts from JSON file content");
     account_store::import_accounts(&content)
+}
+
+/// Import the accounts the local clients are already signed in with
+/// (agy CLI, Antigravity, Antigravity IDE), skipping duplicates.
+#[tauri::command]
+pub fn import_local_accounts() -> AppResult<local_import::LocalImportSummary> {
+    logger::log_info("cmd", "Importing accounts from local clients");
+    local_import::import_local_accounts()
 }
 
 /// Get app status.

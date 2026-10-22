@@ -30,6 +30,18 @@ pub struct CliAccount {
     pub email: String,
 }
 
+/// The full credential the agy CLI is signed in with, for importing it into
+/// the manager.
+#[derive(Debug, Clone)]
+pub struct CliCredential {
+    pub access_token: String,
+    pub refresh_token: String,
+    /// Unix timestamp (seconds) the access token expires at, when known.
+    pub expiry: Option<i64>,
+    pub id_token: Option<String>,
+    pub email: Option<String>,
+}
+
 fn entry() -> AppResult<keyring::Entry> {
     keyring::Entry::new(KEYRING_SERVICE, KEYRING_ENTRY).map_err(|e| {
         let msg = format!("Failed to open keyring entry: {}", e);
@@ -282,6 +294,55 @@ pub fn read_cli_account() -> Option<CliAccount> {
     let email = email?;
     logger::log_debug("keyring", &format!("agy CLI current account: {}", email));
     Some(CliAccount { email })
+}
+
+/// Read the CLI's stored credential for importing it into the account list.
+///
+/// Returns `None` when the CLI has no usable sign-in (no refresh token), so an
+/// unconfigured CLI does not show up as an import source error.
+pub fn read_cli_credential() -> Option<CliCredential> {
+    let payload = read_stored_payload()?;
+    let token = payload.get("token")?;
+
+    let access_token = token
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let refresh_token = token
+        .get("refresh_token")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if refresh_token.is_empty() {
+        logger::log_debug("keyring", "CLI credential has no refresh token, skipping import");
+        return None;
+    }
+
+    let expiry = token
+        .get("expiry")
+        .and_then(|v| v.as_str())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.timestamp());
+
+    let id_token = payload
+        .get("id_token")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let email = id_token
+        .as_deref()
+        .and_then(email_from_id_token)
+        .or_else(active_google_account);
+
+    Some(CliCredential {
+        access_token,
+        refresh_token,
+        expiry,
+        id_token,
+        email,
+    })
 }
 
 /// Decode the `email` claim from a Google id_token (JWT, no verification –

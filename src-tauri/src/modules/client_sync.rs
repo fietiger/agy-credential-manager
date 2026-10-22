@@ -179,6 +179,103 @@ pub fn read_client_state(db_path: &PathBuf) -> Option<String> {
     state_proto::auth_state_label(&raw)
 }
 
+/// The credential a client currently holds, for importing it into the manager.
+#[derive(Debug, Clone)]
+pub struct StoredCredential {
+    pub access_token: String,
+    pub refresh_token: String,
+    /// Unix timestamp (seconds) the access token expires at, when recorded.
+    pub expiry: Option<i64>,
+    pub id_token: Option<String>,
+    pub project_id: Option<String>,
+    pub is_gcp_tos: bool,
+    /// Owner of the credential, as recorded by the client.
+    pub email: Option<String>,
+}
+
+/// Read the credential a DB-backed client is signed in with.
+///
+/// Returns `None` when the client is not installed or holds no refresh token —
+/// e.g. after it signed out and cleared its own record.
+pub fn read_client_credential(kind: ClientKind) -> Option<StoredCredential> {
+    let db = installed_db_path(kind)?;
+    let conn =
+        Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+
+    let entry = get_key(&conn, KEY_OAUTH_TOKEN).ok().flatten()?;
+    let payload = state_proto::decode_unified_state_payload(&entry, SENTINEL_OAUTH)?;
+
+    let access_token = state_proto::find_field(&payload, 1)
+        .ok()
+        .flatten()
+        .and_then(|b| String::from_utf8(b).ok())
+        .unwrap_or_default();
+    let refresh_token = state_proto::find_field(&payload, 3)
+        .ok()
+        .flatten()
+        .and_then(|b| String::from_utf8(b).ok())
+        .unwrap_or_default();
+    if refresh_token.trim().is_empty() {
+        logger::log_debug(
+            "clients",
+            &format!("{} has no refresh token to import", kind.name()),
+        );
+        return None;
+    }
+
+    // field 4 is a Timestamp message: field 1 holds the seconds.
+    let expiry = state_proto::find_field(&payload, 4)
+        .ok()
+        .flatten()
+        .and_then(|ts| state_proto::find_varint_field(&ts, 1).ok().flatten())
+        .map(|secs| secs as i64);
+    let id_token = state_proto::find_field(&payload, 5)
+        .ok()
+        .flatten()
+        .and_then(|b| String::from_utf8(b).ok());
+    let is_gcp_tos = state_proto::find_varint_field(&payload, 6)
+        .ok()
+        .flatten()
+        .map(|v| v == 1)
+        .unwrap_or(false);
+    let email = read_email_from_conn(&conn);
+    let project_id = read_project_id(&conn);
+
+    logger::log_info(
+        "clients",
+        &format!(
+            "Read credential from {}: email={} project={}",
+            kind.name(),
+            email.as_deref().unwrap_or("unknown"),
+            project_id.as_deref().unwrap_or("-")
+        ),
+    );
+
+    Some(StoredCredential {
+        access_token: access_token.trim().to_string(),
+        refresh_token: refresh_token.trim().to_string(),
+        expiry,
+        id_token,
+        project_id,
+        is_gcp_tos,
+        email,
+    })
+}
+
+/// The GCP project bound to the client's current account, if any.
+fn read_project_id(conn: &Connection) -> Option<String> {
+    let prefs = get_key(conn, KEY_ENTERPRISE_PREFS).ok().flatten()?;
+    let payload = state_proto::decode_unified_state_payload(&prefs, SENTINEL_PROJECT)?;
+    let raw = state_proto::find_field(&payload, 3).ok()??;
+    let project = String::from_utf8(raw).ok()?;
+    let project = project.trim().to_string();
+    if project.is_empty() {
+        None
+    } else {
+        Some(project)
+    }
+}
+
 fn set_key(conn: &Connection, key: &str, value: &str) -> AppResult<()> {
     conn.execute(
         "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?1, ?2)",
