@@ -339,10 +339,69 @@ pub fn create_minimal_user_status_payload(email: &str) -> Vec<u8> {
     [encode_string_field(3, email), encode_string_field(7, email)].concat()
 }
 
-/// Extract the email from a user-status payload (field 3).
+/// Extract the email from a user-status payload.
+///
+/// The layouts differ between clients: this app writes the address to fields
+/// 3 and 7, while a client that signed in itself fills field 3 with the
+/// account's display name and keeps the address in field 7. So field 7 wins,
+/// and any other field that actually looks like an address is the fallback —
+/// a plain "field 3" read would report a person's name instead of the email.
 pub fn user_status_email(payload: &[u8]) -> Option<String> {
-    let bytes = find_field(payload, 3).ok()??;
-    String::from_utf8(bytes).ok()
+    let mut offset = 0;
+    let mut fallback: Option<String> = None;
+
+    while offset < payload.len() {
+        let (tag, after_tag) = match read_varint(payload, offset) {
+            Ok(v) => v,
+            Err(_) => break,
+        };
+        let wire_type = (tag & 7) as u8;
+        let field_num = (tag >> 3) as u32;
+
+        if wire_type == 2 {
+            let (length, content_offset) = match read_varint(payload, after_tag) {
+                Ok(v) => v,
+                Err(_) => break,
+            };
+            let end = content_offset + length as usize;
+            if end > payload.len() {
+                break;
+            }
+            if let Ok(text) = String::from_utf8(payload[content_offset..end].to_vec()) {
+                if looks_like_email(&text) {
+                    if field_num == 7 {
+                        return Some(text);
+                    }
+                    if fallback.is_none() {
+                        fallback = Some(text);
+                    }
+                }
+            }
+            offset = end;
+        } else {
+            match skip_field(payload, after_tag, wire_type) {
+                Ok(next) => offset = next,
+                Err(_) => break,
+            }
+        }
+    }
+
+    fallback
+}
+
+/// Cheap sanity check so profile strings (display name, avatar URL, plan name)
+/// are not mistaken for the account address.
+fn looks_like_email(value: &str) -> bool {
+    let value = value.trim();
+    if value.len() < 5 || value.contains(char::is_whitespace) {
+        return false;
+    }
+    match value.split_once('@') {
+        Some((local, domain)) => {
+            !local.is_empty() && domain.contains('.') && !domain.starts_with('.')
+        }
+        None => false,
+    }
 }
 
 /// A unified-state stringValue payload (field 3), e.g. for the
@@ -437,6 +496,30 @@ mod tests {
             user_status_email(&decoded).as_deref(),
             Some("someone@example.com")
         );
+    }
+
+    #[test]
+    fn user_status_prefers_email_over_display_name() {
+        // What a client that signed in by itself stores: field 3 is the display
+        // name, field 7 is the address.
+        let payload = [
+            encode_string_field(3, "Nova Cheng"),
+            encode_string_field(7, "nova.cheng81@example.com"),
+            encode_string_field(38, "https://lh3.googleusercontent.com/a/abc"),
+        ]
+        .concat();
+        assert_eq!(
+            user_status_email(&payload).as_deref(),
+            Some("nova.cheng81@example.com")
+        );
+
+        // Nothing address-like present: report nothing instead of a name.
+        let payload = [
+            encode_string_field(3, "Nova Cheng"),
+            encode_string_field(7, "Google AI Pro"),
+        ]
+        .concat();
+        assert_eq!(user_status_email(&payload), None);
     }
 
     #[test]
