@@ -525,9 +525,15 @@ pub fn parse_code_input(input: &str) -> Option<String> {
         }
     }
 
-    // Bare code: Google's look like `4/0A...`. Anything short or containing
-    // whitespace is treated as a paste mistake.
-    if raw.starts_with("4/") || raw.starts_with("1/") || (raw.len() > 20 && !raw.contains(char::is_whitespace)) {
+    // Bare code: Google's look like `4/0A...`. Anything that still looks like
+    // a URL or a query string is rejected, so pasting the *authorization* URL
+    // (which contains `response_type=code`) is not mistaken for a code.
+    let bare_code = (raw.starts_with("4/") || raw.starts_with("1/") || raw.len() > 20)
+        && !raw.contains(char::is_whitespace)
+        && !raw.contains("://")
+        && !raw.contains('?')
+        && !raw.contains('&');
+    if bare_code {
         return Some(raw.to_string());
     }
     None
