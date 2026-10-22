@@ -351,7 +351,7 @@ async fn fetch_email(access_token: &str) -> Option<String> {
     struct UserInfo {
         email: Option<String>,
     }
-    let resp: Result<UserInfo, _> = client
+    let resp: UserInfo = client
         .get(USERINFO_URL)
         .header("Authorization", format!("Bearer {}", access_token))
         .send()
@@ -439,7 +439,7 @@ fn open(url: &str) -> std::io::Result<()> {
     if url.is_empty() {
         return Ok(());
     }
-    let cmd = if cfg!(target_os = "macos") {
+    let mut cmd = if cfg!(target_os = "macos") {
         let mut c = std::process::Command::new("open");
         c.arg(url);
         c

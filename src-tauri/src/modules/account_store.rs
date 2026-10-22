@@ -67,11 +67,11 @@ fn save_index(idx: &AccountIndex) -> AppResult<()> {
 }
 
 /// Atomically read-modify-write the index.
-pub fn update_index<F: FnOnce(&mut AccountIndex)>() -> AppResult<()> {
+pub fn update_index<F: FnOnce(&mut AccountIndex)>(f: F) -> AppResult<()> {
     let guard = STORE_LOCK.write().map_err(|_| AppError::Other("store lock poisoned".into()))?;
     let _ = &guard; // hold for the whole operation
     let mut idx = load_index_unlocked()?;
-    F(&mut idx);
+    f(&mut idx);
     save_index(&idx)?;
     Ok(())
 }

@@ -94,7 +94,7 @@ pub fn clear_keyring() -> AppResult<()> {
 
     if entry.get_password().is_ok() {
         entry
-            .delete_password()
+            .delete_credential()
             .map_err(|e| {
                 let msg = format!("Failed to delete keyring entry: {}", e);
                 logger::log_error("keyring", &msg);
