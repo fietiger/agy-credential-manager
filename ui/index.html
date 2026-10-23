@@ -38,11 +38,6 @@
       padding: 12px 16px; margin-bottom: 20px; font-size: 0.8rem; color: #aaa;
     }
     .status-bar strong { color: #ccc; }
-    .oauth-section {
-      background: #16213e; border: 1px solid #0f3460; border-radius: 8px;
-      padding: 16px; margin-bottom: 20px; display: none;
-    }
-    .oauth-section.show { display: block; }
     .oauth-url {
       background: #0f3460; border-radius: 6px; padding: 10px;
       font-size: 0.75rem; word-break: break-all; color: #94a3b8;
@@ -143,38 +138,6 @@
       <div id="client-list" style="margin-top:6px;"></div>
     </div>
 
-    <div class="oauth-section" id="oauth-section">
-      <strong>Add account · OAuth authorization</strong>
-      <div class="oauth-desc">
-        Recommended: this opens your default browser to sign in with Google
-        and authorize. The token is then fetched and saved automatically.
-      </div>
-      <div class="oauth-desc">
-        Note: the browser uses whichever Google account is signed in there. If it shows
-        <code>invalid_scope</code>, <code>access_denied</code> or "service has been disabled in this
-        account", that account is restricted by Google — sign in with another account (or use a
-        private window) and try again.
-      </div>
-      <button class="oauth-primary" id="btn-oauth-start">Start OAuth authorization</button>
-      <div class="oauth-link-label">Authorization link</div>
-      <div class="oauth-link-row">
-        <div class="oauth-url" id="oauth-url" title=""></div>
-        <button class="secondary" id="btn-oauth-copy">Copy link</button>
-      </div>
-      <button class="secondary oauth-wide" id="btn-oauth-complete">✓ I've authorized, continue</button>
-      <div class="oauth-divider">
-        Browser didn't redirect back? Paste the callback link or AUTHORIZATION CODE:
-      </div>
-      <div class="oauth-manual-row">
-        <input id="input-oauth-code" placeholder="Paste callback link or code…">
-        <button class="secondary" id="btn-oauth-submit">Submit</button>
-      </div>
-      <div class="oauth-msg" id="oauth-msg"></div>
-      <div style="margin-top:10px;">
-        <button class="secondary" id="btn-oauth-cancel">Cancel</button>
-      </div>
-    </div>
-
     <div class="import-section" id="import-section">
       <strong>Import refresh token</strong>
       <div style="margin-top:8px; font-size:0.8rem; color:#ccc;">
@@ -210,6 +173,46 @@
         <button class="secondary" id="import-close">Close</button>
       </div>
       <div class="fp-body" id="import-body"></div>
+    </div>
+  </div>
+
+  <div class="fp-overlay" id="oauth-overlay" hidden>
+    <div class="fp-backdrop" id="oauth-backdrop"></div>
+    <div class="fp-card" role="dialog" aria-modal="true" aria-label="Add account">
+      <div class="fp-card-head">
+        <span class="t">Add account · OAuth authorization</span>
+        <button class="secondary" id="oauth-close">Close</button>
+      </div>
+      <div class="fp-body">
+        <div class="oauth-desc">
+          Recommended: this opens your default browser to sign in with Google
+          and authorize. The token is then fetched and saved automatically.
+        </div>
+        <div class="oauth-desc">
+          Note: the browser uses whichever Google account is signed in there. If it shows
+          <code>invalid_scope</code>, <code>access_denied</code> or "service has been disabled in this
+          account", that account is restricted by Google — sign in with another account (or use a
+          private window) and try again.
+        </div>
+        <button class="oauth-primary" id="btn-oauth-start">Start OAuth authorization</button>
+        <div class="oauth-link-label">Authorization link</div>
+        <div class="oauth-link-row">
+          <div class="oauth-url" id="oauth-url" title=""></div>
+          <button class="secondary" id="btn-oauth-copy">Copy link</button>
+        </div>
+        <button class="secondary oauth-wide" id="btn-oauth-complete">✓ I've authorized, continue</button>
+        <div class="oauth-divider">
+          Browser didn't redirect back? Paste the callback link or AUTHORIZATION CODE:
+        </div>
+        <div class="oauth-manual-row">
+          <input id="input-oauth-code" placeholder="Paste callback link or code…">
+          <button class="secondary" id="btn-oauth-submit">Submit</button>
+        </div>
+        <div class="oauth-msg" id="oauth-msg"></div>
+        <div style="margin-top:10px;">
+          <button class="secondary" id="btn-oauth-cancel">Cancel</button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -437,6 +440,7 @@
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && !$('fp-overlay').hidden) closeFp();
       if (e.key === 'Escape' && !$('import-overlay').hidden) closeImportOverlay();
+      if (e.key === 'Escape' && !$('oauth-overlay').hidden) cancelOAuth();
     });
 
     // ── clients ─────────────────────────────────────────────────────────
@@ -497,6 +501,7 @@
 
     // ── OAuth flow (Antigravity-Manager style) ─────────────────────────
     let oauthBusy = false;
+    let oauthReq = 0;
 
     function oauthMsg(kind, text) {
       const msg = $('oauth-msg');
@@ -510,16 +515,38 @@
       $('btn-oauth-complete').disabled = busy;
     }
 
+    function openOAuthOverlay() {
+      $('oauth-overlay').hidden = false;
+      document.body.style.overflow = 'hidden';
+    }
+
+    function closeOAuthOverlay() {
+      $('oauth-overlay').hidden = true;
+      document.body.style.overflow = '';
+    }
+
     async function openOAuthPanel() {
-      $('oauth-section').classList.add('show');
+      const req = ++oauthReq;
+      openOAuthOverlay();
+      setOauthBusy(false);
+      $('oauth-url').textContent = '';
+      $('oauth-url').title = '';
+      $('input-oauth-code').value = '';
       oauthMsg('pending', 'Preparing authorization link…');
       try {
         const url = await invoke('oauth_prepare');
+        // Closed while preparing: tear down the flow that just got created.
+        if (req !== oauthReq || $('oauth-overlay').hidden) {
+          try { await invoke('oauth_cancel'); } catch (_) {}
+          return;
+        }
         $('oauth-url').textContent = url;
         $('oauth-url').title = url;
         oauthMsg('', 'Authorize in the opened browser, or copy the link into a browser signed in to Google.');
       } catch (e) {
-        oauthMsg('error', 'Failed to prepare OAuth: ' + e);
+        if (req === oauthReq && !$('oauth-overlay').hidden) {
+          oauthMsg('error', 'Failed to prepare OAuth: ' + e);
+        }
       }
     }
 
@@ -549,12 +576,12 @@
         const acc = await invoke(command);
         oauthMsg('success', 'Account added: ' + acc.email);
         setTimeout(() => {
-          $('oauth-section').classList.remove('show');
+          closeOAuthOverlay();
           $('input-oauth-code').value = '';
           refresh();
         }, 1200);
       } catch (e) {
-        oauthMsg('error', 'OAuth failed: ' + e);
+        if (!$('oauth-overlay').hidden) oauthMsg('error', 'OAuth failed: ' + e);
       } finally {
         setOauthBusy(false);
       }
@@ -578,9 +605,10 @@
     }
 
     async function cancelOAuth() {
+      oauthReq++;
       try { await invoke('oauth_cancel'); } catch (_) {}
       setOauthBusy(false);
-      $('oauth-section').classList.remove('show');
+      closeOAuthOverlay();
       $('input-oauth-code').value = '';
       oauthMsg('', '');
       refresh();
@@ -814,6 +842,8 @@
 
     // ── wire up buttons ─────────────────────────────────────────────────
     $('btn-add-oauth').onclick = openOAuthPanel;
+    $('oauth-close').onclick = cancelOAuth;
+    $('oauth-backdrop').onclick = cancelOAuth;
     $('btn-oauth-cancel').onclick = cancelOAuth;
     $('btn-oauth-start').onclick = () => runOAuthWait('oauth_start');
     $('btn-oauth-complete').onclick = () => runOAuthWait('oauth_complete');
