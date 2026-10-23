@@ -80,6 +80,12 @@
     .fp-overlay { position: fixed; inset: 0; z-index: 40; }
     .fp-overlay[hidden] { display: none; }
     .fp-backdrop { position: absolute; inset: 0; background: rgba(10, 10, 25, 0.62); }
+    .imp-summary { font-size: 0.88rem; color: #fff; margin-bottom: 6px; }
+    .imp-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 7px 0; border-top: 1px dashed #2b2b4d; font-size: 0.85rem; color: #ddd; }
+    .imp-sub { font-size: 0.72rem; color: #94a3b8; margin: -2px 0 4px; word-break: break-all; }
+    .imp-badge { font-size: 0.72rem; padding: 2px 8px; border-radius: 10px; background: #34344a; color: #999; white-space: nowrap; }
+    .imp-badge.ok { background: #274d27; color: #a5dba5; }
+    .imp-badge.bad { background: #5b2323; color: #f0a3a3; }
     .fp-card {
       position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
       width: min(660px, 94vw); max-height: 86vh; background: #16213e;
@@ -183,6 +189,17 @@
         <button class="secondary" id="fp-close">Close</button>
       </div>
       <div class="fp-body" id="fp-body"></div>
+    </div>
+  </div>
+
+  <div class="fp-overlay" id="import-overlay" hidden>
+    <div class="fp-backdrop" id="import-backdrop"></div>
+    <div class="fp-card" role="dialog" aria-modal="true" aria-label="Import from clients">
+      <div class="fp-card-head">
+        <span class="t">Import from clients</span>
+        <button class="secondary" id="import-close">Close</button>
+      </div>
+      <div class="fp-body" id="import-body"></div>
     </div>
   </div>
 
@@ -409,6 +426,7 @@
     $('fp-backdrop').onclick = closeFp;
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && !$('fp-overlay').hidden) closeFp();
+      if (e.key === 'Escape' && !$('import-overlay').hidden) closeImportOverlay();
     });
 
     // ── clients ─────────────────────────────────────────────────────────
@@ -617,31 +635,50 @@
       failed: 'failed',
     };
 
+    // Import from clients, presented in an overlay like the fingerprint
+    // panel, so running an
+    // import never reflows or rewrites the main page while it works.
+    function openImportOverlay() {
+      $('import-overlay').hidden = false;
+      document.body.style.overflow = 'hidden';
+      $('import-body').innerHTML = '<div class="meta">Reading accounts from local clients\u2026</div>';
+    }
+
+    function closeImportOverlay() {
+      $('import-overlay').hidden = true;
+      document.body.style.overflow = '';
+    }
+
+    $('import-close').onclick = closeImportOverlay;
+    $('import-backdrop').onclick = closeImportOverlay;
+
+    function importBadge(status) {
+      const label = CLIENT_STATUS_TEXT[status] || status;
+      const cls = status === 'imported' ? 'imp-badge ok'
+        : status === 'failed' ? 'imp-badge bad' : 'imp-badge';
+      return `<span class="${cls}">${escapeHtml(label)}</span>`;
+    }
+
     async function importFromClients() {
-      const msg = $('file-msg');
-      msg.className = 'oauth-msg pending';
-      msg.textContent = 'Reading accounts from local clients…';
+      openImportOverlay();
       try {
         const s = await invoke('import_local_accounts');
         const parts = [];
-        if (s.imported) parts.push(`imported ${s.imported}`);
+        if (s.imported) parts.push(`Imported ${s.imported}`);
         if (s.skipped_duplicate) parts.push(`skipped ${s.skipped_duplicate} duplicate(s)`);
-        if (!s.imported && !s.skipped_duplicate) parts.push('nothing new to add');
-
-        const detail = s.clients.map(c => {
-          const label = CLIENT_STATUS_TEXT[c.status] || c.status;
-          const who = c.email ? ` ${c.email}` : '';
-          const extra = c.status === 'failed' && c.detail ? `: ${c.detail}` : '';
-          return `${c.client}${who} — ${label}${extra}`;
-        }).join(' · ');
-
-        msg.className = s.imported ? 'oauth-msg success' : 'oauth-msg';
-        msg.textContent = `${parts.join(', ')}${detail ? ' — ' + detail : ''}`;
+        if (!s.imported && !s.skipped_duplicate) parts.push('Nothing new to add');
+        const rows = s.clients.map(c => {
+          const sub = [c.email, c.detail].filter(Boolean).map(escapeHtml).join(' \u00b7 ');
+          return `<div class="imp-row"><span>${escapeHtml(c.client)}</span>${importBadge(c.status)}</div>`
+            + (sub ? `<div class="imp-sub">${sub}</div>` : '');
+        }).join('');
+        $('import-body').innerHTML =
+          `<div class="imp-summary">${escapeHtml(parts.join(' \u00b7 '))}</div>${rows}`;
         if (s.imported) refresh();
         else renderClients();
       } catch (e) {
-        msg.className = 'oauth-msg error';
-        msg.textContent = 'Import failed: ' + e;
+        $('import-body').innerHTML =
+          `<div class="error">Import failed: ${escapeHtml(String(e))}</div>`;
       }
     }
 
