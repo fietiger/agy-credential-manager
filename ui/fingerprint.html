@@ -94,7 +94,7 @@
   <script>
     const { invoke } = window.__TAURI__.core;
     const $ = id => document.getElementById(id);
-    const accountId = new URLSearchParams(location.search).get('id');
+    const accountId = window.__ACCOUNT_ID__ || new URLSearchParams(location.search).get('id');
 
     let overview = null;
     let preview = null;

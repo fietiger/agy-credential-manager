@@ -494,12 +494,21 @@ pub fn open_fingerprint_window(app: tauri::AppHandle, id: String) -> AppResult<(
         .map(|a| a.email)
         .unwrap_or_else(|_| "unknown account".to_string());
 
+    // The account id is injected as a global instead of a `?id=` query, because
+    // the asset resolver treats the URI as a file path and a query string there
+    // gives a blank page.
+    let init_script = format!(
+        "window.__ACCOUNT_ID__ = {};",
+        serde_json::to_string(&id).unwrap_or_else(|_| "\"\"".to_string())
+    );
+
     let mut builder = tauri::WebviewWindowBuilder::new(
         &app,
         &label,
-        tauri::WebviewUrl::App(format!("fingerprint.html?id={}", id).into()),
+        tauri::WebviewUrl::App("fingerprint.html".into()),
     )
     .title(format!("Device fingerprint — {}", email))
+    .initialization_script(&init_script)
     .inner_size(680.0, 820.0)
     .min_inner_size(520.0, 480.0)
     .center();
