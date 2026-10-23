@@ -401,8 +401,7 @@ pub fn delete_version(account_id: &str, version_id: &str) -> AppResult<()> {
     // The `is_current` flag is cleared when the baseline is restored, so also
     // compare values: a version equal to the bound profile is still in use.
     if account.device_history.iter().any(|v| {
-        v.id == version_id
-            && (v.is_current || Some(&v.profile) == account.device_profile.as_ref())
+        v.id == version_id && (v.is_current || Some(&v.profile) == account.device_profile.as_ref())
     }) {
         return Err(other("the currently bound fingerprint cannot be deleted"));
     }

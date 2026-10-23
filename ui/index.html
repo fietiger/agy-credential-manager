@@ -280,13 +280,16 @@
       const base = ov.baseline ? `
         <div class="fp-ver"><span>Original (baseline)<span class="when"> — first fingerprint seen on this machine</span> ${sameFp(ov.baseline, ov.bound_profile) ? '<span class="fp-cur">\u25cf bound</span>' : ''}</span>
           <span class="fp-row"><button class="secondary" data-action="fp-restore" data-version="baseline" data-id="${id}">Restore as bound</button></span></div>` : '';
-      const hist = ov.history.map(v => `
+      const hist = ov.history.map(v => {
+        const bound = v.is_current || sameFp(v.profile, ov.bound_profile);
+        return `
         <div class="fp-ver">
-          <span>${escapeHtml(v.label)} <span class="when">${fmtTs(v.created_at)}</span> ${(v.is_current || sameFp(v.profile, ov.bound_profile)) ? '<span class="fp-cur">\u25cf bound</span>' : ''}</span>
+          <span>${escapeHtml(v.label)} <span class="when">${fmtTs(v.created_at)}</span> ${bound ? '<span class="fp-cur">\u25cf bound</span>' : ''}</span>
           <span class="fp-row">
             <button class="secondary" data-action="fp-restore" data-version="${v.id}" data-id="${id}">Restore</button>
-            <button class="danger" data-action="fp-delete" data-version="${v.id}" data-id="${id}">Delete</button>
-          </span></div>`).join('');
+            <button class="danger" data-action="fp-delete" data-version="${v.id}" data-id="${id}" ${bound ? 'disabled title="Restore another version first"' : ''}>Delete</button>
+          </span></div>`;
+      }).join('');
       const preview = fpPreview[id];
       const st = fpStatus[id];
       panel.innerHTML = `
