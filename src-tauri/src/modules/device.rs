@@ -129,7 +129,7 @@ pub fn write_profile(storage_path: &Path, profile: &DeviceProfile) -> AppResult<
     }
 
     let updated = serde_json::to_string_pretty(&json)?;
-    std::fs::write(storage_path, updated)
+    write_atomic(storage_path, &updated)
         .map_err(|e| other(format!("write {}: {}", storage_path.display(), e)))?;
     logger::log_info(
         "device",
@@ -138,6 +138,20 @@ pub fn write_profile(storage_path: &Path, profile: &DeviceProfile) -> AppResult<
 
     let _ = sync_state_service_machine_id(storage_path, &profile.dev_device_id);
     Ok(())
+}
+
+/// Write through a sibling temp file so an interrupted write cannot leave a
+/// truncated `storage.json` behind. Falls back to a plain write when the
+/// rename is refused (a running client may hold the file open).
+fn write_atomic(path: &Path, content: &str) -> std::io::Result<()> {
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, content)?;
+    if std::fs::rename(&tmp, path).is_ok() {
+        return Ok(());
+    }
+    let result = std::fs::write(path, content);
+    let _ = std::fs::remove_file(&tmp);
+    result
 }
 
 fn sync_state_service_machine_id(storage_path: &Path, service_id: &str) -> AppResult<()> {
@@ -324,7 +338,38 @@ pub fn apply_bound(account_id: &str, target: client_sync::ClientKind) -> AppResu
 pub fn apply_profile(target: client_sync::ClientKind, profile: &DeviceProfile) -> AppResult<()> {
     let path = storage_path_for(target)
         .ok_or_else(|| other(format!("{} is not installed", target.name())))?;
+    keep_original(&path);
     write_profile(&path, profile)
+}
+
+/// Safety net before the first overwrite: remember whatever fingerprint the
+/// machine has right now as the baseline, and keep a pristine copy of the
+/// file. Without this, a user whose first action is "generate → apply" would
+/// destroy the original fingerprint with no way back.
+fn keep_original(storage_path: &Path) {
+    if !storage_path.exists() {
+        return;
+    }
+    // Both steps are best effort: a safety net must never be the reason the
+    // actual write fails.
+    if let Ok(existing) = read_profile(storage_path) {
+        if let Err(e) = save_baseline_if_absent(&existing) {
+            logger::log_warn("device", &format!("could not save baseline: {}", e));
+        }
+    }
+    let backup = storage_path.with_extension("json.orig");
+    if !backup.exists() {
+        match std::fs::copy(storage_path, &backup) {
+            Ok(_) => logger::log_info(
+                "device",
+                &format!("original file kept at {}", backup.display()),
+            ),
+            Err(e) => logger::log_warn(
+                "device",
+                &format!("could not back up {}: {}", storage_path.display(), e),
+            ),
+        }
+    }
 }
 
 /// Make a history version (or "baseline") the account's bound profile.
@@ -353,11 +398,12 @@ pub fn delete_version(account_id: &str, version_id: &str) -> AppResult<()> {
         return Err(other("the original fingerprint cannot be deleted"));
     }
     let mut account = account_store::get_account(account_id)?;
-    if account
-        .device_history
-        .iter()
-        .any(|v| v.id == version_id && v.is_current)
-    {
+    // The `is_current` flag is cleared when the baseline is restored, so also
+    // compare values: a version equal to the bound profile is still in use.
+    if account.device_history.iter().any(|v| {
+        v.id == version_id
+            && (v.is_current || Some(&v.profile) == account.device_profile.as_ref())
+    }) {
         return Err(other("the currently bound fingerprint cannot be deleted"));
     }
     let before = account.device_history.len();
@@ -460,6 +506,16 @@ mod tests {
         let profile = generate_profile();
         write_profile(&storage, &profile).unwrap();
         assert_eq!(read_profile(&storage).unwrap(), profile);
+    }
+
+    #[test]
+    fn write_atomic_replaces_content_without_leftovers() {
+        let dir = TestDir::new();
+        let path = dir.path().join("storage.json");
+        std::fs::write(&path, "{\"keep\":1}").unwrap();
+        write_atomic(&path, "{\"keep\":2}").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"keep\":2}");
+        assert!(!path.with_extension("json.tmp").exists());
     }
 
     #[test]

@@ -77,15 +77,16 @@
     .client-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; font-size: 0.85rem; color: #ddd; }
     .client-badge { font-size: 0.72rem; padding: 2px 8px; border-radius: 10px; background: #274d27; color: #a5dba5; white-space: nowrap; }
     .client-badge.off { background: #34344a; color: #999; }
-    .fp-panel { border:1px solid #e5e7eb; border-radius:10px; padding:10px 12px; margin:-4px 0 12px; background:#fcfcfd; }
-    .fp-panel h4 { margin:8px 0 4px; font-size:0.8rem; color:#374151; }
+    .fp-panel { border:1px solid #2b2b4d; border-radius:10px; padding:10px 12px; margin:-4px 0 12px; background:#16213e; }
+    .fp-panel h4 { margin:8px 0 4px; font-size:0.8rem; color:#c7c7e0; }
     .fp-panel h4:first-child { margin-top:0; }
-    .fp-fields { font-family:ui-monospace,Menlo,monospace; font-size:0.68rem; color:#4b5563; word-break:break-all; line-height:1.5; }
+    .fp-fields { font-family:ui-monospace,Menlo,monospace; font-size:0.68rem; color:#94a3b8; word-break:break-all; line-height:1.5; }
     .fp-row { display:flex; gap:6px; flex-wrap:wrap; margin:6px 0; }
     .fp-row button { padding:3px 8px; font-size:0.72rem; }
-    .fp-ver { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:4px 0; border-top:1px dashed #e5e7eb; }
-    .fp-ver .when { color:#6b7280; font-size:0.7rem; }
-    .fp-cur { color:#059669; font-weight:600; font-size:0.7rem; }
+    .fp-ver { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:4px 0; border-top:1px dashed #2b2b4d; }
+    .fp-ver .when { color:#888; font-size:0.7rem; }
+    .fp-cur { color:#4ade80; font-weight:600; font-size:0.7rem; }
+    .fp-warn { color:#facc15; font-size:0.72rem; margin-top:6px; }
   </style>
 </head>
 <body>
@@ -247,6 +248,11 @@
     // ── device fingerprints ─────────────────────────────────────────
     const fpPreview = {};
 
+    function sameFp(a, b) {
+      return !!a && !!b && a.machine_id === b.machine_id && a.mac_machine_id === b.mac_machine_id
+        && a.dev_device_id === b.dev_device_id && a.sqm_id === b.sqm_id;
+    }
+
     function fpFields(p) {
       if (!p) return '<div class="fp-fields">(none)</div>';
       return `<div class="fp-fields">
@@ -272,11 +278,11 @@
         <h4>${escapeHtml(c.client_name)} — current fingerprint ${c.installed ? '' : '(not installed)'}</h4>
         ${c.installed ? fpFields(c.profile) : ''}`).join('');
       const base = ov.baseline ? `
-        <div class="fp-ver"><span>Original (baseline)<span class="when"> — first fingerprint captured on this machine</span></span>
+        <div class="fp-ver"><span>Original (baseline)<span class="when"> — first fingerprint seen on this machine</span> ${sameFp(ov.baseline, ov.bound_profile) ? '<span class="fp-cur">\u25cf bound</span>' : ''}</span>
           <span class="fp-row"><button class="secondary" data-action="fp-restore" data-version="baseline" data-id="${id}">Restore as bound</button></span></div>` : '';
       const hist = ov.history.map(v => `
         <div class="fp-ver">
-          <span>${escapeHtml(v.label)} <span class="when">${fmtTs(v.created_at)}</span> ${v.is_current ? '<span class="fp-cur">\u25cf bound</span>' : ''}</span>
+          <span>${escapeHtml(v.label)} <span class="when">${fmtTs(v.created_at)}</span> ${(v.is_current || sameFp(v.profile, ov.bound_profile)) ? '<span class="fp-cur">\u25cf bound</span>' : ''}</span>
           <span class="fp-row">
             <button class="secondary" data-action="fp-restore" data-version="${v.id}" data-id="${id}">Restore</button>
             <button class="danger" data-action="fp-delete" data-version="${v.id}" data-id="${id}">Delete</button>
@@ -284,7 +290,7 @@
       const preview = fpPreview[id];
       const st = fpStatus[id];
       panel.innerHTML = `
-        ${st ? `<div style="font-size:0.75rem; margin-bottom:6px; color:${st.err ? '#dc2626' : '#059669'};">${escapeHtml(st.text)}</div>` : ''}
+        ${st ? `<div style="font-size:0.75rem; margin-bottom:6px; color:${st.err ? '#f87171' : '#4ade80'};">${escapeHtml(st.text)}</div>` : ''}
         ${clientsHtml}
         <h4>Bound to this account</h4>
         ${fpFields(ov.bound_profile)}
@@ -305,7 +311,8 @@
         </div>
         <h4>History</h4>
         ${base}${hist || '<div class="fp-fields">No history yet.</div>'}
-        <div class="meta" style="margin-top:6px;">Switching this account into Antigravity / IDE re-applies its bound fingerprint automatically.</div>`;
+        <div class="meta" style="margin-top:6px;">Switching this account into Antigravity / IDE re-applies its bound fingerprint automatically.</div>
+        <div class="fp-warn">Close Antigravity / IDE before applying: a running client keeps this file in memory and rewrites it on exit.</div>`;
     }
 
     async function toggleFp(id) {
