@@ -82,10 +82,20 @@
     .fp-backdrop { position: absolute; inset: 0; background: rgba(10, 10, 25, 0.62); }
     .imp-summary { font-size: 0.88rem; color: #fff; margin-bottom: 6px; }
     .imp-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 7px 0; border-top: 1px dashed #2b2b4d; font-size: 0.85rem; color: #ddd; }
+    .imp-item { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px dashed #2b2b4d; font-size: 0.85rem; color: #ddd; }
+    .imp-item:not(.disabled) { cursor: pointer; }
+    .imp-item.disabled { opacity: 0.55; }
+    .imp-check { width: 15px; height: 15px; flex: none; accent-color: #4f46e5; }
+    .imp-main { flex: 1; min-width: 0; }
+    .imp-name { display: block; }
     .imp-sub { font-size: 0.72rem; color: #94a3b8; margin: -2px 0 4px; word-break: break-all; }
+    .imp-item .imp-sub { display: block; margin: 2px 0 0; }
     .imp-badge { font-size: 0.72rem; padding: 2px 8px; border-radius: 10px; background: #34344a; color: #999; white-space: nowrap; }
     .imp-badge.ok { background: #274d27; color: #a5dba5; }
+    .imp-badge.lib { background: #2b3a5c; color: #a9c1e8; }
     .imp-badge.bad { background: #5b2323; color: #f0a3a3; }
+    .imp-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 14px; padding-top: 12px; border-top: 1px solid #0f3460; }
+    .imp-note { font-size: 0.72rem; color: #94a3b8; }
     .fp-card {
       position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
       width: min(660px, 94vw); max-height: 86vh; background: #16213e;
@@ -627,21 +637,28 @@
     }
 
     // ── import from local clients (agy CLI / Antigravity / IDE) ──────────
+    // Two steps: detection is read-only and lists what each client holds,
+    // then only the ticked rows go through the existing import path.
     const CLIENT_STATUS_TEXT = {
       imported: 'imported',
-      duplicate: 'already added',
-      no_credential: 'not signed in',
+      duplicate: 'already in library',
+      no_credential: 'nothing found',
       no_email: 'no email found',
       failed: 'failed',
     };
+    const IMPORT_STATE_TEXT = {
+      new: 'new',
+      already_managed: 'already in library',
+      no_credential: 'nothing found',
+      no_email: 'no email found',
+      not_imported: 'not imported',
+    };
 
-    // Import from clients, presented in an overlay like the fingerprint
-    // panel, so running an
-    // import never reflows or rewrites the main page while it works.
+    let importCandidates = [];
+
     function openImportOverlay() {
       $('import-overlay').hidden = false;
       document.body.style.overflow = 'hidden';
-      $('import-body').innerHTML = '<div class="meta">Reading accounts from local clients\u2026</div>';
     }
 
     function closeImportOverlay() {
@@ -652,33 +669,130 @@
     $('import-close').onclick = closeImportOverlay;
     $('import-backdrop').onclick = closeImportOverlay;
 
-    function importBadge(status) {
-      const label = CLIENT_STATUS_TEXT[status] || status;
-      const cls = status === 'imported' ? 'imp-badge ok'
-        : status === 'failed' ? 'imp-badge bad' : 'imp-badge';
+    function importBadge(state) {
+      const label = IMPORT_STATE_TEXT[state] || CLIENT_STATUS_TEXT[state] || state;
+      const cls = state === 'new' || state === 'imported' ? 'imp-badge ok'
+        : state === 'failed' ? 'imp-badge bad'
+        : state === 'already_managed' || state === 'duplicate' ? 'imp-badge lib'
+        : 'imp-badge';
       return `<span class="${cls}">${escapeHtml(label)}</span>`;
     }
 
-    async function importFromClients() {
-      openImportOverlay();
+    function importCandidateRows() {
+      return importCandidates.map((c, i) => {
+        const selectable = c.state === 'new';
+        const sub = [c.email, c.detail].filter(Boolean).map(escapeHtml).join(' \u00b7 ');
+        return `
+          <label class="imp-item${selectable ? '' : ' disabled'}">
+            <input class="imp-check" type="checkbox" data-import-idx="${i}"
+                   ${selectable ? 'checked' : 'disabled'} />
+            <span class="imp-main">
+              <span class="imp-name">${escapeHtml(c.client_name)}</span>
+              ${sub ? `<span class="imp-sub">${sub}</span>` : ''}
+            </span>
+            ${importBadge(c.state)}
+          </label>`;
+      }).join('');
+    }
+
+    function selectedImportIndexes() {
+      return [...$('import-body').querySelectorAll('input.imp-check:checked:not(:disabled)')]
+        .map(cb => Number(cb.dataset.importIdx));
+    }
+
+    function updateImportSelection() {
+      const n = selectedImportIndexes().length;
+      const btn = $('btn-import-selected');
+      if (!btn) return;
+      btn.disabled = n === 0;
+      btn.textContent = n ? `Import selected (${n})` : 'Import selected';
+    }
+
+    function renderImportCandidates() {
+      if (!importCandidates.length) {
+        $('import-body').innerHTML = '<div class="meta">No local clients were found.</div>';
+        return;
+      }
+      const count = state => importCandidates.filter(c => c.state === state).length;
+      const parts = [];
+      if (count('new')) parts.push(`${count('new')} new`);
+      if (count('already_managed')) parts.push(`${count('already_managed')} already in library`);
+      if (count('no_email')) parts.push(`${count('no_email')} without email`);
+      if (count('no_credential')) parts.push(`${count('no_credential')} nothing found`);
+      $('import-body').innerHTML = `
+        <div class="imp-summary">${escapeHtml(parts.join(' \u00b7 ') || 'No credentials found')}</div>
+        ${importCandidateRows()}
+        <div class="imp-footer">
+          <span class="imp-note">Nothing is written until you import.</span>
+          <button id="btn-import-selected" data-imp-action="import">Import selected</button>
+        </div>`;
+      updateImportSelection();
+    }
+
+    function renderImportResults(summary, picked) {
+      const byClient = {};
+      summary.clients.forEach(c => { byClient[c.client] = c; });
+      const parts = [];
+      if (summary.imported) parts.push(`Imported ${summary.imported}`);
+      if (summary.skipped_duplicate) parts.push(`Skipped ${summary.skipped_duplicate} duplicate(s)`);
+      if (!parts.length) parts.push('Nothing new to add');
+      const rows = importCandidates.map(c => {
+        const result = byClient[c.client_name];
+        const wasPicked = picked.has(c.client + '\n' + (c.email || '').toLowerCase());
+        let state = c.state;
+        let detail = [c.email, c.detail].filter(Boolean).join(' \u00b7 ');
+        if (result) {
+          state = result.status;
+          detail = [result.email, result.detail].filter(Boolean).join(' \u00b7 ');
+        } else if (wasPicked) {
+          // Picked during detection, but the client's sign-in changed since.
+          state = 'not_imported';
+        }
+        return `<div class="imp-row"><span>${escapeHtml(c.client_name)}</span>${importBadge(state)}</div>`
+          + (detail ? `<div class="imp-sub">${escapeHtml(detail)}</div>` : '');
+      }).join('');
+      $('import-body').innerHTML =
+        `<div class="imp-summary">${escapeHtml(parts.join(' \u00b7 '))}</div>${rows}
+         <div class="imp-footer"><span class="imp-note">The account list has been refreshed.</span></div>`;
+    }
+
+    async function importSelected() {
+      const picked = selectedImportIndexes()
+        .map(i => importCandidates[i])
+        .filter(c => c && c.email)
+        .map(c => ({ client: c.client, email: c.email }));
+      if (!picked.length) return;
+      const pickedKeys = new Set(picked.map(p => p.client + '\n' + p.email.toLowerCase()));
+      const btn = $('btn-import-selected');
+      if (btn) { btn.disabled = true; btn.textContent = 'Importing\u2026'; }
       try {
-        const s = await invoke('import_local_accounts');
-        const parts = [];
-        if (s.imported) parts.push(`Imported ${s.imported}`);
-        if (s.skipped_duplicate) parts.push(`skipped ${s.skipped_duplicate} duplicate(s)`);
-        if (!s.imported && !s.skipped_duplicate) parts.push('Nothing new to add');
-        const rows = s.clients.map(c => {
-          const sub = [c.email, c.detail].filter(Boolean).map(escapeHtml).join(' \u00b7 ');
-          return `<div class="imp-row"><span>${escapeHtml(c.client)}</span>${importBadge(c.status)}</div>`
-            + (sub ? `<div class="imp-sub">${sub}</div>` : '');
-        }).join('');
-        $('import-body').innerHTML =
-          `<div class="imp-summary">${escapeHtml(parts.join(' \u00b7 '))}</div>${rows}`;
-        if (s.imported) refresh();
-        else renderClients();
+        const summary = await invoke('import_local_accounts', { selected: picked });
+        renderImportResults(summary, pickedKeys);
+        refresh();
       } catch (e) {
         $('import-body').innerHTML =
           `<div class="error">Import failed: ${escapeHtml(String(e))}</div>`;
+      }
+    }
+
+    $('import-body').addEventListener('change', (e) => {
+      if (e.target.classList.contains('imp-check')) updateImportSelection();
+    });
+
+    $('import-body').addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-imp-action]');
+      if (btn && btn.dataset.impAction === 'import') importSelected();
+    });
+
+    async function importFromClients() {
+      openImportOverlay();
+      $('import-body').innerHTML = '<div class="meta">Detecting accounts on local clients\u2026</div>';
+      try {
+        importCandidates = await invoke('preview_local_import');
+        renderImportCandidates();
+      } catch (e) {
+        $('import-body').innerHTML =
+          `<div class="error">Detection failed: ${escapeHtml(String(e))}</div>`;
       }
     }
 

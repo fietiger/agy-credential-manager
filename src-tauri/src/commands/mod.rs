@@ -375,12 +375,33 @@ pub fn import_accounts_json(content: String) -> AppResult<account_store::ImportS
     account_store::import_accounts(&content)
 }
 
-/// Import the accounts the local clients are already signed in with
-/// (agy CLI, Antigravity, Antigravity IDE), skipping duplicates.
+/// Detect the accounts the local clients are already signed in with
+/// (agy CLI, Antigravity, Antigravity IDE) without importing anything.
 #[tauri::command]
-pub fn import_local_accounts() -> AppResult<local_import::LocalImportSummary> {
-    logger::log_info("cmd", "Importing accounts from local clients");
-    local_import::import_local_accounts()
+pub fn preview_local_import() -> AppResult<Vec<local_import::ImportCandidate>> {
+    logger::log_info("cmd", "Detecting accounts on local clients");
+    local_import::preview_local_import()
+}
+
+/// Import the local-client accounts the user selected. Omitting `selected`
+/// imports everything, as the pre-picker command did.
+#[tauri::command]
+pub fn import_local_accounts(
+    selected: Option<Vec<local_import::ImportSelection>>,
+) -> AppResult<local_import::LocalImportSummary> {
+    logger::log_info(
+        "cmd",
+        &format!(
+            "Importing accounts from local clients ({})",
+            selected
+                .as_ref()
+                .map_or("all".to_string(), |s| format!("{} selected", s.len()))
+        ),
+    );
+    match selected.as_deref() {
+        Some(selection) => local_import::import_local_accounts_selected(Some(selection)),
+        None => local_import::import_local_accounts(),
+    }
 }
 
 /// Get app status.
