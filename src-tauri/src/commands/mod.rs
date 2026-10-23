@@ -429,6 +429,9 @@ pub fn open_log_dir() -> AppResult<()> {
 
 #[tauri::command]
 pub fn device_overview(id: String) -> AppResult<device::DeviceOverview> {
+    // Logged so a window that stays blank can be told apart from a window whose
+    // page never loaded at all.
+    logger::log_info("device", "device overview requested by a window");
     device::overview(&id)
 }
 
