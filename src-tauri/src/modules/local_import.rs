@@ -5,8 +5,13 @@
 //!
 //! - **agy CLI** — the OS keyring (`gemini` / `antigravity`) plus a file copy
 //!   in `~/.gemini/antigravity-cli/` (see [`crate::modules::agy_sync`]);
-//! - **Antigravity** and **Antigravity IDE** — the unified state topic in
-//!   their `state.vscdb` (see [`crate::modules::client_sync`]).
+//! - **Antigravity IDE** — the unified state topic in its `state.vscdb`
+//!   (see [`crate::modules::client_sync`]);
+//! - **Antigravity** (classic) — signed in through the shared `~/.gemini`
+//!   store, exactly like the CLI, so the shared credential is read first
+//!   and its `state.vscdb` is only a fallback: current desktop builds no
+//!   longer keep the live login there, and whatever the database still
+//!   holds may be a stale, signed-out account.
 //!
 //! The same Google account can therefore show up two or three times, so
 //! imports are de-duplicated by refresh token and by email before anything is
@@ -17,7 +22,7 @@ use crate::models::account::Account;
 use crate::models::token::TokenData;
 use crate::modules::client_sync::ClientKind;
 use crate::modules::{account_store, agy_sync, client_sync, logger};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// A credential read from one client, normalised across storage formats.
 #[derive(Debug, Clone, Default)]
@@ -77,13 +82,22 @@ fn db_credential(kind: ClientKind) -> Option<Credential> {
     })
 }
 
+/// The classic desktop app shares its login with the CLI (one shared
+/// `~/.gemini` credential in the keyring plus file copy), which is also
+/// what `list_clients` reports for it. Read that first and fall back to
+/// the client's own `state.vscdb` only when no shared credential exists.
+fn classic_credential() -> Option<Credential> {
+    cli_credential().or_else(|| db_credential(ClientKind::Classic))
+}
+
 /// Every client this machine can import from, in display order.
 fn collect_credentials() -> Vec<(ClientKind, Option<Credential>)> {
     let mut out = Vec::new();
     for kind in [ClientKind::AgyCli, ClientKind::Classic, ClientKind::Ide] {
         let cred = match kind {
             ClientKind::AgyCli => cli_credential(),
-            _ => db_credential(kind),
+            ClientKind::Classic => classic_credential(),
+            ClientKind::Ide => db_credential(kind),
         };
         out.push((kind, cred));
     }
@@ -124,6 +138,10 @@ fn describe_expiry(cred: &Credential) -> Option<String> {
 pub fn import_local_accounts() -> AppResult<LocalImportSummary> {
     // Snapshot what is already managed, so a re-run adds nothing.
     let idx = account_store::load_index()?;
+    let mut email_to_id: HashMap<String, String> = HashMap::new();
+    for summary in &idx.accounts {
+        email_to_id.insert(summary.email.trim().to_lowercase(), summary.id.clone());
+    }
     let mut known_emails: HashSet<String> = HashSet::new();
     let mut known_tokens: HashSet<String> = HashSet::new();
     for summary in &idx.accounts {
@@ -174,6 +192,18 @@ pub fn import_local_accounts() -> AppResult<LocalImportSummary> {
         let email_key = email.to_lowercase();
         if known_emails.contains(&email_key) || known_tokens.contains(&cred.refresh_token) {
             result.skipped_duplicate += 1;
+            // Already managed is not a reason to skip the slot: when the
+            // same account is live in another client as well (the classic
+            // desktop app shares the CLI credential), record this client
+            // on the account so its badge reflects reality.
+            if let Some(existing_id) = email_to_id.get(&email_key) {
+                if let Err(e) = account_store::set_client_account(existing_id, kind) {
+                    logger::log_warn(
+                        "import",
+                        &format!("Could not record {} for {}: {}", email, kind.name(), e),
+                    );
+                }
+            }
             result.clients.push(ClientImport {
                 client: name,
                 email: Some(email),
@@ -190,6 +220,7 @@ pub fn import_local_accounts() -> AppResult<LocalImportSummary> {
         let id = account.id.clone();
         match account_store::add_account(account) {
             Ok(()) => {
+                email_to_id.insert(email_key.clone(), id.clone());
                 known_emails.insert(email_key);
                 // The client really is using this account right now, so record
                 // it in that client's slot as well — the badge then shows which
