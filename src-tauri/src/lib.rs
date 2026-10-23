@@ -34,6 +34,7 @@ pub fn run() {
             oauth_cancel,
             import_refresh_token,
             import_accounts_json,
+            preview_local_import,
             import_local_accounts,
             list_clients,
             // device fingerprints
