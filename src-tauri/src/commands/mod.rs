@@ -10,7 +10,6 @@ use crate::modules::local_import;
 use crate::modules::logger;
 use crate::modules::oauth;
 use serde::Serialize;
-use tauri::Manager;
 
 // ── DTO types returned to the frontend ───────────────────────────────────
 
@@ -429,9 +428,6 @@ pub fn open_log_dir() -> AppResult<()> {
 
 #[tauri::command]
 pub fn device_overview(id: String) -> AppResult<device::DeviceOverview> {
-    // Logged so a window that stays blank can be told apart from a window whose
-    // page never loaded at all.
-    logger::log_info("device", "device overview requested by a window");
     device::overview(&id)
 }
 
@@ -480,52 +476,4 @@ pub fn device_delete_version(id: String, version_id: String) -> AppResult<()> {
 #[tauri::command]
 pub fn device_restore_original(id: String) -> AppResult<DeviceProfile> {
     device::restore_original(&id)
-}
-
-/// Open the fingerprint window for one account, or focus it if it is already
-/// open (one window per account).
-#[tauri::command]
-pub fn open_fingerprint_window(app: tauri::AppHandle, id: String) -> AppResult<()> {
-    let label = format!("fp-{}", id);
-    if let Some(win) = app.get_webview_window(&label) {
-        let _ = win.unminimize();
-        let _ = win.set_focus();
-        return Ok(());
-    }
-
-    let email = account_store::get_account(&id)
-        .map(|a| a.email)
-        .unwrap_or_else(|_| "unknown account".to_string());
-
-    // The account id is injected as a global instead of a `?id=` query, because
-    // the asset resolver treats the URI as a file path and a query string there
-    // gives a blank page.
-    let init_script = format!(
-        "window.__ACCOUNT_ID__ = {};",
-        serde_json::to_string(&id).unwrap_or_else(|_| "\"\"".to_string())
-    );
-
-    // NOTE: deliberately no `additionalBrowserArgs` here. WebView2 requires every
-    // window sharing a user-data folder to use the *same* environment options, and
-    // passing them again on the second window made its controller come up with a
-    // 0x0 composition surface (blank window); it inherits the app-wide options.
-    let builder = tauri::WebviewWindowBuilder::new(
-        &app,
-        &label,
-        tauri::WebviewUrl::App("fingerprint.html".into()),
-    )
-    .title(format!("Device fingerprint — {}", email))
-    .initialization_script(&init_script)
-    .inner_size(680.0, 820.0)
-    .min_inner_size(520.0, 480.0)
-    .center();
-
-    builder
-        .build()
-        .map_err(|e| {
-            logger::log_error("device", &format!("fingerprint window failed: {}", e));
-            AppError::Other(format!("failed to open fingerprint window: {}", e))
-        })?;
-    logger::log_info("device", &format!("fingerprint window opened for {}", id));
-    Ok(())
 }

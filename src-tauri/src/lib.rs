@@ -46,7 +46,6 @@ pub fn run() {
             device_restore_version,
             device_delete_version,
             device_restore_original,
-            open_fingerprint_window,
             // status
             get_status,
             // export

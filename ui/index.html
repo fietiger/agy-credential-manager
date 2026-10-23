@@ -77,6 +77,28 @@
     .client-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; font-size: 0.85rem; color: #ddd; }
     .client-badge { font-size: 0.72rem; padding: 2px 8px; border-radius: 10px; background: #274d27; color: #a5dba5; white-space: nowrap; }
     .client-badge.off { background: #34344a; color: #999; }
+    .fp-overlay { position: fixed; inset: 0; z-index: 40; }
+    .fp-overlay[hidden] { display: none; }
+    .fp-backdrop { position: absolute; inset: 0; background: rgba(10, 10, 25, 0.62); }
+    .fp-card {
+      position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      width: min(660px, 94vw); max-height: 86vh; background: #16213e;
+      border: 1px solid #0f3460; border-radius: 12px; display: flex; flex-direction: column;
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+    }
+    .fp-card-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid #0f3460; }
+    .fp-card-head .t { font-size: 0.9rem; font-weight: 600; color: #fff; word-break: break-all; }
+    .fp-card-head button { padding: 4px 10px; }
+    .fp-body { padding: 12px 16px 16px; overflow-y: auto; }
+    .fp-body h4 { margin: 10px 0 4px; font-size: 0.8rem; color: #c7c7e0; }
+    .fp-body h4:first-child { margin-top: 0; }
+    .fp-fields { font-family: ui-monospace, Menlo, monospace; font-size: 0.7rem; color: #94a3b8; word-break: break-all; line-height: 1.6; }
+    .fp-row { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+    .fp-row button { padding: 4px 9px; font-size: 0.72rem; }
+    .fp-ver { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px dashed #2b2b4d; }
+    .fp-ver .when { color: #888; font-size: 0.7rem; }
+    .fp-cur { color: #4ade80; font-weight: 600; font-size: 0.7rem; }
+    .fp-warn { color: #facc15; font-size: 0.72rem; margin-top: 8px; line-height: 1.5; }
   </style>
 </head>
 <body>
@@ -150,6 +172,17 @@
     <div id="account-list"></div>
   </div>
 
+  <div class="fp-overlay" id="fp-overlay" hidden>
+    <div class="fp-backdrop" id="fp-backdrop"></div>
+    <div class="fp-card" role="dialog" aria-modal="true" aria-label="Device fingerprint">
+      <div class="fp-card-head">
+        <span class="t" id="fp-title">Device fingerprint</span>
+        <button class="secondary" id="fp-close">Close</button>
+      </div>
+      <div class="fp-body" id="fp-body"></div>
+    </div>
+  </div>
+
   <script>
     const { invoke } = window.__TAURI__.core;
 
@@ -221,7 +254,7 @@
           <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
             ${CLIENT_TARGETS.map(([k, label, tip]) =>
               `<button class="secondary" style="padding:4px 8px; font-size:0.75rem;" title="${tip}" data-action="activate" data-target="${k}" data-id="${a.id}">${label}</button>`).join('')}
-            <button class="secondary" style="padding:4px 8px; font-size:0.75rem;" title="Open the device fingerprint window for this account" data-action="fingerprint" data-id="${a.id}">Fingerprint</button>
+            <button class="secondary" style="padding:4px 8px; font-size:0.75rem;" title="Show this account's device fingerprint" data-action="fingerprint" data-id="${a.id}" data-email="${escapeHtml(a.email)}">Fingerprint</button>
             <button class="danger" data-action="remove" data-id="${a.id}">Remove</button>
           </div>
         </div>
@@ -234,6 +267,144 @@
       return div.innerHTML;
     }
 
+    // ── device fingerprint overlay ─────────────────────────────────────
+    // Rendered over the account list instead of expanding a card, so the page
+    // never reflows while a fingerprint is being inspected.
+    const fpPreview = {};
+    const fpStatus = {};
+
+    function sameFp(a, b) {
+      return !!a && !!b && a.machine_id === b.machine_id && a.mac_machine_id === b.mac_machine_id
+        && a.dev_device_id === b.dev_device_id && a.sqm_id === b.sqm_id;
+    }
+
+    function fpFields(p) {
+      if (!p) return '<div class="fp-fields">(none)</div>';
+      return `<div class="fp-fields">
+        machineId: ${escapeHtml(p.machine_id)}<br>
+        macMachineId: ${escapeHtml(p.mac_machine_id)}<br>
+        devDeviceId: ${escapeHtml(p.dev_device_id)}<br>
+        sqmId: ${escapeHtml(p.sqm_id)}</div>`;
+    }
+
+    function openFp(id, email) {
+      $('fp-overlay').hidden = false;
+      $('fp-title').dataset.id = id;
+      $('fp-title').textContent = 'Device fingerprint — ' + email;
+      $('fp-body').innerHTML = '<div class="meta">Loading…</div>';
+      loadFp(id);
+    }
+
+    function closeFp() {
+      $('fp-overlay').hidden = true;
+    }
+
+    async function loadFp(id) {
+      try {
+        const ov = await invoke('device_overview', { id });
+        renderFp(id, ov);
+      } catch (e) {
+        $('fp-body').innerHTML = `<div class="error">Failed to load fingerprints: ${escapeHtml(String(e))}</div>`;
+      }
+    }
+
+    function renderFp(id, ov) {
+      const clientsHtml = ov.clients.map(c => `
+        <h4>${escapeHtml(c.client_name)} — current fingerprint ${c.installed ? '' : '(not installed)'}</h4>
+        ${c.installed ? fpFields(c.profile) : ''}`).join('');
+      const base = ov.baseline ? `
+        <div class="fp-ver"><span>Original (baseline)<span class="when"> — first fingerprint seen on this machine</span> ${sameFp(ov.baseline, ov.bound_profile) ? '<span class="fp-cur">\u25cf bound</span>' : ''}</span>
+          <span class="fp-row"><button class="secondary" data-action="fp-restore" data-version="baseline" data-id="${id}">Restore as bound</button></span></div>` : '';
+      const hist = ov.history.map(v => {
+        const bound = v.is_current || sameFp(v.profile, ov.bound_profile);
+        return `
+        <div class="fp-ver">
+          <span>${escapeHtml(v.label)} <span class="when">${fmtTs(v.created_at)}</span> ${bound ? '<span class="fp-cur">\u25cf bound</span>' : ''}</span>
+          <span class="fp-row">
+            <button class="secondary" data-action="fp-restore" data-version="${v.id}" data-id="${id}">Restore</button>
+            <button class="danger" data-action="fp-delete" data-version="${v.id}" data-id="${id}" ${bound ? 'disabled title="Restore another version first"' : ''}>Delete</button>
+          </span></div>`;
+      }).join('');
+      const preview = fpPreview[id];
+      const st = fpStatus[id];
+      $('fp-body').innerHTML = `
+        ${st ? `<div style="font-size:0.75rem; margin-bottom:6px; color:${st.err ? '#f87171' : '#4ade80'};">${escapeHtml(st.text)}</div>` : ''}
+        ${clientsHtml}
+        <h4>Bound to this account</h4>
+        ${fpFields(ov.bound_profile)}
+        <div class="fp-row">
+          <button class="secondary" data-action="fp-capture" data-source="classic" data-id="${id}">Capture from Antigravity</button>
+          <button class="secondary" data-action="fp-capture" data-source="ide" data-id="${id}">Capture from IDE</button>
+          <button class="secondary" data-action="fp-generate" data-id="${id}">Generate new…</button>
+        </div>
+        ${preview ? `<h4>New fingerprint (not bound yet)</h4>${fpFields(preview)}
+        <div class="fp-row">
+          <button data-action="fp-bind-generated" data-id="${id}">Bind this fingerprint</button>
+          <button class="secondary" data-action="fp-discard" data-id="${id}">Discard</button>
+        </div>` : ''}
+        <div class="fp-row">
+          <button class="secondary" data-action="fp-apply" data-target="classic" data-id="${id}" ${ov.bound_profile ? '' : 'disabled'}>Apply bound to Antigravity</button>
+          <button class="secondary" data-action="fp-apply" data-target="ide" data-id="${id}" ${ov.bound_profile ? '' : 'disabled'}>Apply bound to IDE</button>
+          <button class="secondary" data-action="fp-restore-original" data-id="${id}" ${ov.baseline ? '' : 'disabled'}>Restore original</button>
+        </div>
+        <h4>History</h4>
+        ${base}${hist || '<div class="fp-fields">No history yet.</div>'}
+        <div class="meta" style="margin-top:6px;">Switching this account into Antigravity / IDE re-applies its bound fingerprint automatically.</div>
+        <div class="fp-warn">Close Antigravity / IDE before applying: a running client keeps this file in memory and rewrites it on exit.</div>`;
+    }
+
+    async function fpRun(id, fn, okMsg) {
+      try { await fn(); fpStatus[id] = { text: okMsg, err: false }; }
+      catch (e) { fpStatus[id] = { text: String(e), err: true }; }
+      await loadFp(id);
+    }
+
+    $('fp-body').addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-action]');
+      if (!btn) return;
+      const fpId = btn.dataset.id;
+      const action = btn.dataset.action;
+      if (action === 'fp-capture') {
+        fpRun(fpId, () => invoke('device_capture_bind', { id: fpId, source: btn.dataset.source }), 'Fingerprint captured and bound.');
+      }
+      if (action === 'fp-generate') (async () => {
+        try {
+          fpPreview[fpId] = await invoke('device_generate_profile');
+          fpStatus[fpId] = { text: 'A new fingerprint was generated — bind it to use it.', err: false };
+        } catch (err) {
+          fpStatus[fpId] = { text: String(err), err: true };
+        }
+        await loadFp(fpId);
+      })();
+      if (action === 'fp-bind-generated') {
+        const profile = fpPreview[fpId];
+        delete fpPreview[fpId];
+        fpRun(fpId, () => invoke('device_bind_profile', { id: fpId, profile, label: 'generated' }), 'New fingerprint bound.');
+      }
+      if (action === 'fp-discard') {
+        delete fpPreview[fpId];
+        delete fpStatus[fpId];
+        loadFp(fpId);
+      }
+      if (action === 'fp-apply') {
+        fpRun(fpId, () => invoke('device_apply', { id: fpId, target: btn.dataset.target }), 'Bound fingerprint written to the client.');
+      }
+      if (action === 'fp-restore') {
+        fpRun(fpId, () => invoke('device_restore_version', { id: fpId, versionId: btn.dataset.version }), 'Restored as the bound fingerprint — apply it (or switch the account) to write it out.');
+      }
+      if (action === 'fp-delete') {
+        fpRun(fpId, () => invoke('device_delete_version', { id: fpId, versionId: btn.dataset.version }), 'History entry deleted.');
+      }
+      if (action === 'fp-restore-original') {
+        fpRun(fpId, () => invoke('device_restore_original', { id: fpId }), 'Original fingerprint restored as bound — apply it to write it back.');
+      }
+    });
+
+    $('fp-close').onclick = closeFp;
+    $('fp-backdrop').onclick = closeFp;
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !$('fp-overlay').hidden) closeFp();
+    });
 
     // ── clients ─────────────────────────────────────────────────────────
     async function renderClients() {
@@ -284,6 +455,7 @@
       if (!confirm('Remove this account?')) return;
       try {
         await invoke('delete_account', { id });
+        if (!$('fp-overlay').hidden && $('fp-title').dataset.id === id) closeFp();
         refresh();
       } catch (e) {
         alert('Failed to remove: ' + e);
@@ -500,15 +672,12 @@
     $('btn-export').onclick = exportJson;
     // NOTE: inline onclick attributes are blocked by the production CSP,
     // so list buttons use data-action + this delegated listener.
-    $('account-list').addEventListener('click', async (e) => {
+    $('account-list').addEventListener('click', (e) => {
       const btn = e.target.closest('button[data-action]');
       if (!btn) return;
       if (btn.dataset.action === 'activate') activate(btn.dataset.id, btn.dataset.target);
       if (btn.dataset.action === 'remove') removeAccount(btn.dataset.id);
-      if (btn.dataset.action === 'fingerprint') {
-        try { await invoke('open_fingerprint_window', { id: btn.dataset.id }); }
-        catch (err) { alert('Could not open the fingerprint window: ' + err); }
-      }
+      if (btn.dataset.action === 'fingerprint') openFp(btn.dataset.id, btn.dataset.email);
     });
     $('btn-import-file').onclick = () => $('input-import-file').click();
     $('input-import-file').onchange = importFile;
