@@ -36,6 +36,16 @@ pub fn run() {
             import_accounts_json,
             import_local_accounts,
             list_clients,
+            // device fingerprints
+            device_overview,
+            device_capture_bind,
+            device_generate_profile,
+            device_bind_profile,
+            device_generate_and_bind,
+            device_apply,
+            device_restore_version,
+            device_delete_version,
+            device_restore_original,
             // status
             get_status,
             // export
