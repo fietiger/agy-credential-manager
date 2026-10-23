@@ -110,17 +110,20 @@
 
     <div class="btn-row">
       <button id="btn-add-oauth">Add via OAuth</button>
+      <button class="secondary" id="btn-import-local" title="Read the accounts agy CLI / Antigravity / Antigravity IDE are signed in with">Import from clients</button>
       <button class="secondary" id="btn-add-manual">Add Refresh Token</button>
       <button class="secondary" id="btn-export">Export JSON</button>
       <button class="secondary" id="btn-import-file">Import JSON</button>
-      <button class="secondary" id="btn-import-local" title="Read the accounts agy CLI / Antigravity / Antigravity IDE are signed in with">Import from clients</button>
       <input type="file" id="input-import-file" accept=".json,application/json" style="display:none" />
     </div>
     <div class="oauth-msg" id="file-msg"></div>
     <div class="oauth-msg" id="activate-msg"></div>
 
     <div class="clients-section" id="clients-section">
-      <strong>Clients</strong>
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <strong>Clients</strong>
+        <button class="secondary" id="btn-import-local-2" title="Read the accounts agy CLI / Antigravity / Antigravity IDE are signed in with" style="padding:3px 10px; font-size:0.75rem;">Import from clients</button>
+      </div>
       <div id="client-list" style="margin-top:6px;"></div>
     </div>
 
@@ -684,6 +687,7 @@
     $('btn-import-file').onclick = () => $('input-import-file').click();
     $('input-import-file').onchange = importFile;
     $('btn-import-local').onclick = importFromClients;
+    document.getElementById('btn-import-local-2').onclick = importFromClients;
 
     // initial load
     refresh();
