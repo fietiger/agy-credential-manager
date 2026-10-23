@@ -289,6 +289,7 @@
 
     function openFp(id, email) {
       $('fp-overlay').hidden = false;
+      document.body.style.overflow = 'hidden';
       $('fp-title').dataset.id = id;
       $('fp-title').textContent = 'Device fingerprint — ' + email;
       $('fp-body').innerHTML = '<div class="meta">Loading…</div>';
@@ -297,6 +298,7 @@
 
     function closeFp() {
       $('fp-overlay').hidden = true;
+      document.body.style.overflow = '';
     }
 
     async function loadFp(id) {
