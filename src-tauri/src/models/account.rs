@@ -25,6 +25,12 @@ pub struct Account {
     pub disabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled_reason: Option<String>,
+    /// Device fingerprint bound to this account (applied on switch).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_profile: Option<DeviceProfile>,
+    /// Past fingerprints bound to this account, newest last.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub device_history: Vec<DeviceProfileVersion>,
 }
 
 impl Account {
@@ -40,6 +46,8 @@ impl Account {
             custom_label: None,
             disabled: false,
             disabled_reason: None,
+            device_profile: None,
+            device_history: Vec::new(),
         }
     }
 
@@ -186,4 +194,25 @@ mod tests {
         // optional fields are omitted when None
         assert!(!json.contains("custom_label"));
     }
+}
+
+/// A device fingerprint: the telemetry identifiers a VS Code based client
+/// keeps in storage.json (telemetry.*), modeled on Antigravity-Manager.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceProfile {
+    pub machine_id: String,
+    pub mac_machine_id: String,
+    pub dev_device_id: String,
+    pub sqm_id: String,
+}
+
+/// One entry in an account's fingerprint history.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceProfileVersion {
+    pub id: String,
+    pub created_at: i64,
+    pub label: String,
+    pub profile: DeviceProfile,
+    #[serde(default)]
+    pub is_current: bool,
 }

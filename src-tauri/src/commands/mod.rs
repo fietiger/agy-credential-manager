@@ -1,10 +1,11 @@
 //! Tauri IPC command handlers exposed to the frontend.
 
 use crate::error::{AppError, AppResult};
-use crate::models::account::{Account, AccountExportResponse};
+use crate::models::account::{Account, AccountExportResponse, DeviceProfile};
 use crate::modules::account_store;
 use crate::modules::agy_sync;
 use crate::modules::client_sync;
+use crate::modules::device;
 use crate::modules::local_import;
 use crate::modules::logger;
 use crate::modules::oauth;
@@ -124,7 +125,7 @@ pub async fn set_active_account(
     );
     let mut acc = account_store::get_account_with_refresh(&id).await?;
 
-    let result = match target {
+    let mut result = match target {
         client_sync::ClientKind::AgyCli => {
             // agy CLI: write the access token to the OS keyring and read
             // it back to verify. Failures are reported as this client's
@@ -213,6 +214,19 @@ pub async fn set_active_account(
     if result.ok {
         acc.update_last_used();
         account_store::set_client_account(&id, target)?;
+        // Re-apply the account's bound device fingerprint, if any, so an
+        // account and its fingerprint always travel together (VS Code
+        // clients only; the CLI has no storage.json fingerprint).
+        if target != client_sync::ClientKind::AgyCli {
+            if let Some(profile) = &acc.device_profile {
+                match device::apply_profile(target, profile) {
+                    Ok(()) => result.detail.push_str("; device fingerprint applied"),
+                    Err(e) => result
+                        .detail
+                        .push_str(&format!("; device fingerprint failed: {}", e)),
+                }
+            }
+        }
     }
     logger::log_info(
         "cmd",
@@ -407,3 +421,59 @@ pub fn open_log_dir() -> AppResult<()> {
 }
 
 // ── supporting types ──────────────────────────────────────────────────────
+
+// ---------------------------------------------------------------------------
+// Device fingerprints
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn device_overview(id: String) -> AppResult<device::DeviceOverview> {
+    device::overview(&id)
+}
+
+#[tauri::command]
+pub fn device_capture_bind(
+    id: String,
+    source: client_sync::ClientKind,
+) -> AppResult<DeviceProfile> {
+    device::capture_and_bind(&id, source)
+}
+
+#[tauri::command]
+pub fn device_generate_profile() -> DeviceProfile {
+    device::generate_profile()
+}
+
+#[tauri::command]
+pub fn device_bind_profile(
+    id: String,
+    profile: DeviceProfile,
+    label: String,
+) -> AppResult<DeviceProfile> {
+    device::bind_profile(&id, profile, &label)
+}
+
+#[tauri::command]
+pub fn device_generate_and_bind(id: String) -> AppResult<DeviceProfile> {
+    device::generate_and_bind(&id)
+}
+
+#[tauri::command]
+pub fn device_apply(id: String, target: client_sync::ClientKind) -> AppResult<DeviceProfile> {
+    device::apply_bound(&id, target)
+}
+
+#[tauri::command]
+pub fn device_restore_version(id: String, version_id: String) -> AppResult<DeviceProfile> {
+    device::restore_version(&id, &version_id)
+}
+
+#[tauri::command]
+pub fn device_delete_version(id: String, version_id: String) -> AppResult<()> {
+    device::delete_version(&id, &version_id)
+}
+
+#[tauri::command]
+pub fn device_restore_original(id: String) -> AppResult<DeviceProfile> {
+    device::restore_original(&id)
+}

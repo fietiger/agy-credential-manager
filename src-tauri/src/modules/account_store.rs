@@ -168,6 +168,14 @@ pub fn get_account(id: &str) -> AppResult<Account> {
     Ok(serde_json::from_str(&raw)?)
 }
 
+/// Persist a modified account (file only; the index summary is unaffected).
+pub fn save_account(account: &Account) -> AppResult<()> {
+    let path = account_file(&account.id)?;
+    let raw = serde_json::to_string_pretty(account)?;
+    std::fs::write(&path, raw)?;
+    Ok(())
+}
+
 /// Read a full account, refreshing its access token when expired or
 /// missing. Accounts imported from a file carry no access token; for
 /// those, a failed best-effort refresh (offline, bad test token, ...)

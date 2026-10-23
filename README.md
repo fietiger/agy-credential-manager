@@ -13,6 +13,7 @@
 - **文件批量导入**：可直接导入 Antigravity-Manager 导出的 JSON 文件（裸数组 `[{email, refresh_token}]`），也兼容本应用自己的导出格式；自动跳过无效条目与重复账号并报告数量，邮箱取自文件、不会显示 unknown
 - **一键切换账号**：将账号设为活跃时，把它的凭证按 agy CLI 的格式写入系统 keyring（service `gemini` / entry `antigravity`，同时更新 `~/.gemini/antigravity-cli/antigravity-oauth-token`），agy CLI 下次启动即使用该账号；写入后会读回校验
 - **多客户端切换（逐客户端选择）**：每个账号可分别切入指定客户端——agy CLI（系统 keyring）、Antigravity 经典版、Antigravity IDE（各自 `state.vscdb` 的 unified state 格式注入，含 token、`authStateWithContext` 登录态、userStatus 与项目偏好）；每个客户端独立保存自己的当前账号、互不影响（与 Antigravity-Manager 相同的模型）；账号卡上的徽章显示该账号正被哪些客户端使用，界面 Clients 区显示每个客户端的安装状态、登录态（`signed in` / `signed out` / `no account`）与当前登录邮箱。写入后立即回读校验：客户端在运行中把自己的内存状态写回、吞掉了这次切换时，会直接报错并提示先关闭客户端，而不是假装成功
+- **设备指纹管理**：每个账号可绑定一套设备指纹（客户端 `storage.json` 中的 `telemetry.machineId` / `macMachineId` / `devDeviceId` / `sqmId`，写入时同步 `storage.serviceMachineId` 到 `storage.json` 与 `state.vscdb`）。账号卡上的「Fingerprint」面板可查看 Antigravity 与 IDE 当前的实时指纹、把某个客户端的现行指纹捕获并绑定到账号、生成全新指纹并绑定、把绑定指纹写入指定客户端；切换账号进 Antigravity / IDE 时会自动把其绑定指纹一并写入。每次绑定都会留一条历史版本，可随时恢复或删除；本机第一次捕获的指纹会存为全局「原始指纹」基线（数据目录下的 `device_original.json`，不会被覆盖），可一键恢复为绑定
 - **自动刷新**：读取账号时若 access token 已过期（提前 60 秒判定），自动用 refresh token 刷新
 - **导出备份**：一键导出全部账号（邮箱 + refresh token 等）为 JSON，便于备份与迁移
 - **文件日志**：结构化日志写入应用数据目录，界面内可直接打开日志目录
