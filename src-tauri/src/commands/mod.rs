@@ -10,6 +10,7 @@ use crate::modules::local_import;
 use crate::modules::logger;
 use crate::modules::oauth;
 use serde::Serialize;
+use tauri::Manager;
 
 // ── DTO types returned to the frontend ───────────────────────────────────
 
@@ -476,4 +477,48 @@ pub fn device_delete_version(id: String, version_id: String) -> AppResult<()> {
 #[tauri::command]
 pub fn device_restore_original(id: String) -> AppResult<DeviceProfile> {
     device::restore_original(&id)
+}
+
+/// Open the fingerprint window for one account, or focus it if it is already
+/// open (one window per account).
+#[tauri::command]
+pub fn open_fingerprint_window(app: tauri::AppHandle, id: String) -> AppResult<()> {
+    let label = format!("fp-{}", id);
+    if let Some(win) = app.get_webview_window(&label) {
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+        return Ok(());
+    }
+
+    let email = account_store::get_account(&id)
+        .map(|a| a.email)
+        .unwrap_or_else(|_| "unknown account".to_string());
+
+    let mut builder = tauri::WebviewWindowBuilder::new(
+        &app,
+        &label,
+        tauri::WebviewUrl::App(format!("fingerprint.html?id={}", id).into()),
+    )
+    .title(format!("Device fingerprint — {}", email))
+    .inner_size(680.0, 820.0)
+    .min_inner_size(520.0, 480.0)
+    .center();
+
+    // The main window needs `--in-process-gpu` where the WebView2 GPU process
+    // cannot start (virtual displays); a window created at runtime does not
+    // inherit that config, so reuse it instead of hard-coding a second copy.
+    if let Some(args) = app
+        .config()
+        .app
+        .windows
+        .first()
+        .and_then(|w| w.additional_browser_args.clone())
+    {
+        builder = builder.additional_browser_args(&args);
+    }
+
+    builder
+        .build()
+        .map_err(|e| AppError::Other(format!("failed to open fingerprint window: {}", e)))?;
+    Ok(())
 }

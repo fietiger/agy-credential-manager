@@ -77,16 +77,6 @@
     .client-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; font-size: 0.85rem; color: #ddd; }
     .client-badge { font-size: 0.72rem; padding: 2px 8px; border-radius: 10px; background: #274d27; color: #a5dba5; white-space: nowrap; }
     .client-badge.off { background: #34344a; color: #999; }
-    .fp-panel { border:1px solid #2b2b4d; border-radius:10px; padding:10px 12px; margin:-4px 0 12px; background:#16213e; }
-    .fp-panel h4 { margin:8px 0 4px; font-size:0.8rem; color:#c7c7e0; }
-    .fp-panel h4:first-child { margin-top:0; }
-    .fp-fields { font-family:ui-monospace,Menlo,monospace; font-size:0.68rem; color:#94a3b8; word-break:break-all; line-height:1.5; }
-    .fp-row { display:flex; gap:6px; flex-wrap:wrap; margin:6px 0; }
-    .fp-row button { padding:3px 8px; font-size:0.72rem; }
-    .fp-ver { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:4px 0; border-top:1px dashed #2b2b4d; }
-    .fp-ver .when { color:#888; font-size:0.7rem; }
-    .fp-cur { color:#4ade80; font-weight:600; font-size:0.7rem; }
-    .fp-warn { color:#facc15; font-size:0.72rem; margin-top:6px; }
   </style>
 </head>
 <body>
@@ -231,11 +221,10 @@
           <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
             ${CLIENT_TARGETS.map(([k, label, tip]) =>
               `<button class="secondary" style="padding:4px 8px; font-size:0.75rem;" title="${tip}" data-action="activate" data-target="${k}" data-id="${a.id}">${label}</button>`).join('')}
-            <button class="secondary" style="padding:4px 8px; font-size:0.75rem;" title="Device fingerprint bound to this account" data-action="fingerprint" data-id="${a.id}">Fingerprint</button>
+            <button class="secondary" style="padding:4px 8px; font-size:0.75rem;" title="Open the device fingerprint window for this account" data-action="fingerprint" data-id="${a.id}">Fingerprint</button>
             <button class="danger" data-action="remove" data-id="${a.id}">Remove</button>
           </div>
         </div>
-        <div class="fp-panel" id="fp-${a.id}" hidden></div>
       `).join('');
     }
 
@@ -245,92 +234,6 @@
       return div.innerHTML;
     }
 
-    // ── device fingerprints ─────────────────────────────────────────
-    const fpPreview = {};
-
-    function sameFp(a, b) {
-      return !!a && !!b && a.machine_id === b.machine_id && a.mac_machine_id === b.mac_machine_id
-        && a.dev_device_id === b.dev_device_id && a.sqm_id === b.sqm_id;
-    }
-
-    function fpFields(p) {
-      if (!p) return '<div class="fp-fields">(none)</div>';
-      return `<div class="fp-fields">
-        machineId: ${escapeHtml(p.machine_id)}<br>
-        macMachineId: ${escapeHtml(p.mac_machine_id)}<br>
-        devDeviceId: ${escapeHtml(p.dev_device_id)}<br>
-        sqmId: ${escapeHtml(p.sqm_id)}</div>`;
-    }
-
-    async function loadFp(id) {
-      const panel = $('fp-' + id);
-      try {
-        const ov = await invoke('device_overview', { id });
-        renderFp(id, ov);
-      } catch (e) {
-        panel.innerHTML = `<div class="error">Failed to load fingerprints: ${escapeHtml(String(e))}</div>`;
-      }
-    }
-
-    function renderFp(id, ov) {
-      const panel = $('fp-' + id);
-      const clientsHtml = ov.clients.map(c => `
-        <h4>${escapeHtml(c.client_name)} — current fingerprint ${c.installed ? '' : '(not installed)'}</h4>
-        ${c.installed ? fpFields(c.profile) : ''}`).join('');
-      const base = ov.baseline ? `
-        <div class="fp-ver"><span>Original (baseline)<span class="when"> — first fingerprint seen on this machine</span> ${sameFp(ov.baseline, ov.bound_profile) ? '<span class="fp-cur">\u25cf bound</span>' : ''}</span>
-          <span class="fp-row"><button class="secondary" data-action="fp-restore" data-version="baseline" data-id="${id}">Restore as bound</button></span></div>` : '';
-      const hist = ov.history.map(v => {
-        const bound = v.is_current || sameFp(v.profile, ov.bound_profile);
-        return `
-        <div class="fp-ver">
-          <span>${escapeHtml(v.label)} <span class="when">${fmtTs(v.created_at)}</span> ${bound ? '<span class="fp-cur">\u25cf bound</span>' : ''}</span>
-          <span class="fp-row">
-            <button class="secondary" data-action="fp-restore" data-version="${v.id}" data-id="${id}">Restore</button>
-            <button class="danger" data-action="fp-delete" data-version="${v.id}" data-id="${id}" ${bound ? 'disabled title="Restore another version first"' : ''}>Delete</button>
-          </span></div>`;
-      }).join('');
-      const preview = fpPreview[id];
-      const st = fpStatus[id];
-      panel.innerHTML = `
-        ${st ? `<div style="font-size:0.75rem; margin-bottom:6px; color:${st.err ? '#f87171' : '#4ade80'};">${escapeHtml(st.text)}</div>` : ''}
-        ${clientsHtml}
-        <h4>Bound to this account</h4>
-        ${fpFields(ov.bound_profile)}
-        <div class="fp-row">
-          <button class="secondary" data-action="fp-capture" data-source="classic" data-id="${id}">Capture from Antigravity</button>
-          <button class="secondary" data-action="fp-capture" data-source="ide" data-id="${id}">Capture from IDE</button>
-          <button class="secondary" data-action="fp-generate" data-id="${id}">Generate new…</button>
-        </div>
-        ${preview ? `<h4>New fingerprint (not bound yet)</h4>${fpFields(preview)}
-        <div class="fp-row">
-          <button data-action="fp-bind-generated" data-id="${id}">Bind this fingerprint</button>
-          <button class="secondary" data-action="fp-discard" data-id="${id}">Discard</button>
-        </div>` : ''}
-        <div class="fp-row">
-          <button class="secondary" data-action="fp-apply" data-target="classic" data-id="${id}" ${ov.bound_profile ? '' : 'disabled'}>Apply bound to Antigravity</button>
-          <button class="secondary" data-action="fp-apply" data-target="ide" data-id="${id}" ${ov.bound_profile ? '' : 'disabled'}>Apply bound to IDE</button>
-          <button class="secondary" data-action="fp-restore-original" data-id="${id}" ${ov.baseline ? '' : 'disabled'}>Restore original</button>
-        </div>
-        <h4>History</h4>
-        ${base}${hist || '<div class="fp-fields">No history yet.</div>'}
-        <div class="meta" style="margin-top:6px;">Switching this account into Antigravity / IDE re-applies its bound fingerprint automatically.</div>
-        <div class="fp-warn">Close Antigravity / IDE before applying: a running client keeps this file in memory and rewrites it on exit.</div>`;
-    }
-
-    async function toggleFp(id) {
-      const panel = $('fp-' + id);
-      if (!panel) return;
-      if (panel.hidden) { panel.hidden = false; panel.innerHTML = '<div class="meta">Loading…</div>'; await loadFp(id); }
-      else panel.hidden = true;
-    }
-
-    const fpStatus = {};
-    async function fpRun(id, fn, okMsg) {
-      try { await fn(); fpStatus[id] = { text: okMsg, err: false }; }
-      catch (e) { fpStatus[id] = { text: String(e), err: true }; }
-      await loadFp(id);
-    }
 
     // ── clients ─────────────────────────────────────────────────────────
     async function renderClients() {
@@ -602,16 +505,10 @@
       if (!btn) return;
       if (btn.dataset.action === 'activate') activate(btn.dataset.id, btn.dataset.target);
       if (btn.dataset.action === 'remove') removeAccount(btn.dataset.id);
-      const fpId = btn.dataset.id;
-      if (btn.dataset.action === 'fingerprint') toggleFp(fpId);
-      if (btn.dataset.action === 'fp-capture') fpRun(fpId, () => invoke('device_capture_bind', { id: fpId, source: btn.dataset.source }), 'Fingerprint captured and bound.');
-      if (btn.dataset.action === 'fp-generate') { fpPreview[fpId] = await invoke('device_generate_profile'); loadFp(fpId); }
-      if (btn.dataset.action === 'fp-bind-generated') fpRun(fpId, () => invoke('device_bind_profile', { id: fpId, profile: fpPreview[fpId], label: 'generated' }), 'New fingerprint bound.');
-      if (btn.dataset.action === 'fp-discard') { delete fpPreview[fpId]; loadFp(fpId); }
-      if (btn.dataset.action === 'fp-apply') fpRun(fpId, () => invoke('device_apply', { id: fpId, target: btn.dataset.target }), 'Bound fingerprint written to the client.');
-      if (btn.dataset.action === 'fp-restore') fpRun(fpId, () => invoke('device_restore_version', { id: fpId, versionId: btn.dataset.version }), 'Fingerprint restored as bound (apply or switch to write it).');
-      if (btn.dataset.action === 'fp-delete') fpRun(fpId, () => invoke('device_delete_version', { id: fpId, versionId: btn.dataset.version }), 'History entry deleted.');
-      if (btn.dataset.action === 'fp-restore-original') fpRun(fpId, () => invoke('device_restore_original', { id: fpId }), 'Original fingerprint restored as bound.');
+      if (btn.dataset.action === 'fingerprint') {
+        try { await invoke('open_fingerprint_window', { id: btn.dataset.id }); }
+        catch (err) { alert('Could not open the fingerprint window: ' + err); }
+      }
     });
     $('btn-import-file').onclick = () => $('input-import-file').click();
     $('input-import-file').onchange = importFile;
