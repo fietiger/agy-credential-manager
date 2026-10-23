@@ -505,7 +505,11 @@ pub fn open_fingerprint_window(app: tauri::AppHandle, id: String) -> AppResult<(
         serde_json::to_string(&id).unwrap_or_else(|_| "\"\"".to_string())
     );
 
-    let mut builder = tauri::WebviewWindowBuilder::new(
+    // NOTE: deliberately no `additionalBrowserArgs` here. WebView2 requires every
+    // window sharing a user-data folder to use the *same* environment options, and
+    // passing them again on the second window made its controller come up with a
+    // 0x0 composition surface (blank window); it inherits the app-wide options.
+    let builder = tauri::WebviewWindowBuilder::new(
         &app,
         &label,
         tauri::WebviewUrl::App("fingerprint.html".into()),
@@ -516,21 +520,12 @@ pub fn open_fingerprint_window(app: tauri::AppHandle, id: String) -> AppResult<(
     .min_inner_size(520.0, 480.0)
     .center();
 
-    // The main window needs `--in-process-gpu` where the WebView2 GPU process
-    // cannot start (virtual displays); a window created at runtime does not
-    // inherit that config, so reuse it instead of hard-coding a second copy.
-    if let Some(args) = app
-        .config()
-        .app
-        .windows
-        .first()
-        .and_then(|w| w.additional_browser_args.clone())
-    {
-        builder = builder.additional_browser_args(&args);
-    }
-
     builder
         .build()
-        .map_err(|e| AppError::Other(format!("failed to open fingerprint window: {}", e)))?;
+        .map_err(|e| {
+            logger::log_error("device", &format!("fingerprint window failed: {}", e));
+            AppError::Other(format!("failed to open fingerprint window: {}", e))
+        })?;
+    logger::log_info("device", &format!("fingerprint window opened for {}", id));
     Ok(())
 }
