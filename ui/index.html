@@ -31,7 +31,7 @@
     .meta { color: #888; font-size: 0.75rem; margin-top: 4px; }
     .badge { font-size: 0.7rem; padding: 2px 8px; border-radius: 4px; }
     .badge.active { background: #4f46e5; color: #fff; }
-    .badge.invalid { background: #dc2626; color: #fff; }
+    .badge.pending { background: #b45309; color: #fff; }
     .badge.ok { background: #16a34a; color: #fff; }
     .status-bar {
       background: #16213e; border: 1px solid #0f3460; border-radius: 8px;
@@ -313,7 +313,7 @@
             <div class="meta">
               ${a.access_token_valid
                 ? '<span class="badge ok">token valid</span>'
-                : '<span class="badge invalid">expired</span>'}
+                : '<span class="badge pending">待刷新</span>'}
               ${a.active_in.map(k => `<span class="badge active">${CLIENT_SHORT[k]}</span>`).join(' ')}
               &nbsp;Last used: ${fmtTs(a.last_used)}
             </div>
