@@ -10,8 +10,9 @@ use crate::modules::local_import;
 use crate::modules::logger;
 use crate::modules::oauth;
 use serde::Serialize;
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use tauri::Manager;
+use tauri_plugin_dialog::DialogExt;
 
 // ── DTO types returned to the frontend ───────────────────────────────────
 
@@ -433,65 +434,69 @@ pub fn export_accounts() -> AppResult<AccountExportResponse> {
     account_store::export_accounts()
 }
 
-/// Save the frontend-rendered export to a file and return its absolute path.
-///
-/// The webview cannot download files itself: WebKitGTK cancels programmatic
-/// downloads when the webview has no download handler, so the file is written
-/// here instead of through a blob URL.
+/// Default export target: the downloads folder plus the dated file name.
 #[tauri::command]
-pub fn save_export_file(content: String) -> AppResult<String> {
-    match write_export_to_downloads(&content) {
-        Ok(path) => {
+pub fn default_export_path() -> AppResult<String> {
+    let dir = dirs::download_dir()
+        .or_else(dirs::home_dir)
+        .ok_or_else(|| AppError::Other("Could not determine a default export folder".into()))?;
+    Ok(dir.join(export_file_name()).to_string_lossy().to_string())
+}
+
+fn export_file_name() -> String {
+    format!(
+        "agy-credentials-{}.json",
+        chrono::Utc::now().format("%Y-%m-%d")
+    )
+}
+
+/// Open a native save dialog pre-filled with the current export target.
+/// Returns the chosen path, or `None` when the user cancels the dialog.
+#[tauri::command]
+pub async fn choose_export_path(
+    window: tauri::WebviewWindow,
+    current_path: String,
+) -> AppResult<Option<String>> {
+    let current = PathBuf::from(&current_path);
+    let file_name = current
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(export_file_name);
+    let mut dialog = window
+        .app_handle()
+        .dialog()
+        .file()
+        .set_file_name(file_name)
+        .add_filter("JSON", &["json"])
+        .set_parent(&window);
+    if let Some(dir) = current.parent().filter(|p| !p.as_os_str().is_empty()) {
+        dialog = dialog.set_directory(dir);
+    }
+    let chosen = dialog.blocking_save_file();
+    chosen
+        .map(|path| {
+            path.into_path()
+                .map(|p| p.to_string_lossy().to_string())
+                .map_err(|e| AppError::Other(e.to_string()))
+        })
+        .transpose()
+}
+
+/// Write the frontend-rendered export to the user-chosen path and return it.
+/// The path comes from the native save dialog, so overwriting it is intended.
+#[tauri::command]
+pub fn save_export_file(content: String, path: String) -> AppResult<String> {
+    let path = PathBuf::from(path);
+    match std::fs::write(&path, content.as_bytes()) {
+        Ok(()) => {
             logger::log_info("cmd", &format!("Export saved to {}", path.display()));
             Ok(path.to_string_lossy().to_string())
         }
         Err(e) => {
             logger::log_error("cmd", &format!("Export failed: {}", e));
-            Err(e)
+            Err(e.into())
         }
     }
-}
-
-fn write_export_to_downloads(content: &str) -> AppResult<PathBuf> {
-    let dir = dirs::download_dir()
-        .or_else(dirs::home_dir)
-        .ok_or_else(|| AppError::Other("Could not determine a folder to save the export".into()))?;
-    std::fs::create_dir_all(&dir)?;
-    let stamp = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    write_export(&dir, &stamp, content)
-}
-
-/// Write `content` as `agy-credentials-<stamp>.json`, adding a counter when
-/// that name is taken. The file is created exclusively so two exports cannot
-/// clobber each other.
-fn write_export(dir: &Path, stamp: &str, content: &str) -> AppResult<PathBuf> {
-    for n in 0..1000 {
-        let name = if n == 0 {
-            format!("agy-credentials-{}.json", stamp)
-        } else {
-            format!("agy-credentials-{} ({}).json", stamp, n)
-        };
-        let path = dir.join(name);
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(mut file) => {
-                if let Err(e) = file.write_all(content.as_bytes()) {
-                    drop(file);
-                    let _ = std::fs::remove_file(&path);
-                    return Err(e.into());
-                }
-                return Ok(path);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e.into()),
-        }
-    }
-    Err(AppError::Other(
-        "Could not find a free export filename".into(),
-    ))
 }
 
 /// Open the log directory in the system file manager.
@@ -564,26 +569,20 @@ pub fn device_restore_original(id: String) -> AppResult<DeviceProfile> {
 
 #[cfg(test)]
 mod tests {
-    use super::write_export;
+    use super::save_export_file;
 
     #[test]
-    fn export_file_names_do_not_overwrite() {
+    fn export_writes_to_the_chosen_path_and_overwrites() {
         let dir = std::env::temp_dir().join(format!("agy-export-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("picked-by-user.json");
+        let path_str = path.to_string_lossy().to_string();
 
-        let first = write_export(&dir, "2026-10-23", "{\"a\":1}").unwrap();
-        let second = write_export(&dir, "2026-10-23", "{\"a\":2}").unwrap();
+        save_export_file("{\"v\":1}".into(), path_str.clone()).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"v\":1}");
 
-        assert_eq!(
-            first.file_name().unwrap(),
-            "agy-credentials-2026-10-23.json"
-        );
-        assert_eq!(
-            second.file_name().unwrap(),
-            "agy-credentials-2026-10-23 (1).json"
-        );
-        assert_eq!(std::fs::read_to_string(&first).unwrap(), "{\"a\":1}");
-        assert_eq!(std::fs::read_to_string(&second).unwrap(), "{\"a\":2}");
+        save_export_file("{\"v\":2}".into(), path_str).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"v\":2}");
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

@@ -62,6 +62,12 @@
       border-radius: 6px; padding: 8px; color: #eee; font-size: 0.85rem;
       margin-top: 8px;
     }
+    .export-label { font-size: 0.75rem; color: #94a3b8; }
+    .export-path {
+      background: #0f3460; border-radius: 6px; padding: 10px;
+      font-size: 0.78rem; color: #94a3b8; word-break: break-all; margin-top: 6px;
+    }
+    .export-actions { display: flex; gap: 8px; margin-top: 14px; }
     #export-msg { margin-top: 0; word-break: break-all; }
     .empty { text-align: center; color: #555; padding: 40px; font-size: 0.9rem; }
     .clients-section { margin-top: 18px; border: 1px solid #2b2b4d; border-radius: 8px; padding: 12px 14px; }
@@ -228,7 +234,18 @@
         <button class="secondary" id="export-close">Close</button>
       </div>
       <div class="fp-body">
-        <div class="oauth-msg" id="export-msg"></div>
+        <div id="export-config">
+          <div class="export-label">Save to</div>
+          <div class="export-path" id="export-path"></div>
+          <div class="export-actions">
+            <button class="secondary" id="btn-export-choose">Choose location</button>
+            <button id="btn-export-save" disabled>Export</button>
+          </div>
+          <div class="oauth-msg" id="export-config-msg"></div>
+        </div>
+        <div id="export-result" hidden>
+          <div class="oauth-msg" id="export-msg"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -856,6 +873,8 @@
     }
 
     // ── export ───────────────────────────────────────────────────────────
+    let exportPicking = false;
+
     function openExportOverlay() {
       $('export-overlay').hidden = false;
       document.body.style.overflow = 'hidden';
@@ -866,18 +885,65 @@
       document.body.style.overflow = '';
     }
 
-    async function exportJson() {
-      const msg = $('export-msg');
+    async function openExportDialog() {
       openExportOverlay();
+      $('export-config').hidden = false;
+      $('export-result').hidden = true;
+      $('export-config-msg').textContent = '';
+      $('export-msg').textContent = '';
+      $('export-path').textContent = '';
+      $('export-path').title = '';
+      $('btn-export-save').disabled = true;
+      try {
+        const path = await invoke('default_export_path');
+        $('export-path').textContent = path;
+        $('export-path').title = path;
+        $('btn-export-save').disabled = false;
+      } catch (e) {
+        $('export-config-msg').className = 'oauth-msg error';
+        $('export-config-msg').textContent = 'Could not resolve the default export path: ' + e;
+      }
+    }
+
+    async function chooseExportLocation() {
+      if (exportPicking) return;
+      exportPicking = true;
+      $('btn-export-choose').disabled = true;
+      try {
+        const picked = await invoke('choose_export_path', {
+          currentPath: $('export-path').textContent.trim(),
+        });
+        if (picked) {
+          $('export-path').textContent = picked;
+          $('export-path').title = picked;
+          $('export-config-msg').textContent = '';
+          $('btn-export-save').disabled = false;
+        }
+      } catch (e) {
+        $('export-config-msg').className = 'oauth-msg error';
+        $('export-config-msg').textContent = 'Could not open the save dialog: ' + e;
+      } finally {
+        exportPicking = false;
+        $('btn-export-choose').disabled = false;
+      }
+    }
+
+    async function saveExport() {
+      const path = $('export-path').textContent.trim();
+      if (!path) return;
+      $('export-config').hidden = true;
+      $('export-result').hidden = false;
+      const msg = $('export-msg');
       msg.className = 'oauth-msg pending';
       msg.textContent = 'Exporting…';
       try {
         const data = await invoke('export_accounts');
-        const path = await invoke('save_export_file', {
+        const saved = await invoke('save_export_file', {
           content: JSON.stringify(data, null, 2),
+          path,
         });
         msg.className = 'oauth-msg success';
-        msg.textContent = `Exported to ${path}`;
+        msg.textContent = `Exported to ${saved}`;
       } catch (e) {
         msg.className = 'oauth-msg error';
         msg.textContent = 'Export failed: ' + e;
@@ -898,7 +964,9 @@
     $('rtoken-close').onclick = closeRtokenOverlay;
     $('rtoken-backdrop').onclick = closeRtokenOverlay;
     $('btn-import-cancel').onclick = closeRtokenOverlay;
-    $('btn-export').onclick = exportJson;
+    $('btn-export').onclick = openExportDialog;
+    $('btn-export-choose').onclick = chooseExportLocation;
+    $('btn-export-save').onclick = saveExport;
     $('export-close').onclick = closeExportOverlay;
     $('export-backdrop').onclick = closeExportOverlay;
     // NOTE: inline onclick attributes are blocked by the production CSP,

@@ -27,6 +27,7 @@ base64 = "0.22"
 dirs = "5"
 thiserror = "2"
 url = "2"
+tauri-plugin-dialog = "2"
 
 [features]
 default = []
