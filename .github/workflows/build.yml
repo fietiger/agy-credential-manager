@@ -101,15 +101,24 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item src-tauri/target/release/agy-credential-manager.exe dist/
+          Copy-Item src-tauri/target/release/agy-credential-manager.exe dist/agy-credential-manager-windows-x64.exe
           Get-ChildItem dist
 
-      - name: Collect artifact (Linux/macOS)
-        if: matrix.os != 'windows-latest'
+      - name: Collect artifact (Linux)
+        if: matrix.os == 'ubuntu-latest'
         run: |
           mkdir -p dist
-          cp src-tauri/target/release/agy-credential-manager dist/
-          chmod +x dist/agy-credential-manager
+          cp src-tauri/target/release/agy-credential-manager dist/agy-credential-manager-linux-x64
+          chmod +x dist/agy-credential-manager-linux-x64
+          ls -la dist
+
+      # macos-latest runners are Apple-silicon, so the binary is arm64.
+      - name: Collect artifact (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          mkdir -p dist
+          cp src-tauri/target/release/agy-credential-manager dist/agy-credential-manager-macos-arm64
+          chmod +x dist/agy-credential-manager-macos-arm64
           ls -la dist
 
       - name: Upload artifact
