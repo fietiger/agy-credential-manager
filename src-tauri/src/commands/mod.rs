@@ -10,6 +10,8 @@ use crate::modules::local_import;
 use crate::modules::logger;
 use crate::modules::oauth;
 use serde::Serialize;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 // ── DTO types returned to the frontend ───────────────────────────────────
 
@@ -431,6 +433,67 @@ pub fn export_accounts() -> AppResult<AccountExportResponse> {
     account_store::export_accounts()
 }
 
+/// Save the frontend-rendered export to a file and return its absolute path.
+///
+/// The webview cannot download files itself: WebKitGTK cancels programmatic
+/// downloads when the webview has no download handler, so the file is written
+/// here instead of through a blob URL.
+#[tauri::command]
+pub fn save_export_file(content: String) -> AppResult<String> {
+    match write_export_to_downloads(&content) {
+        Ok(path) => {
+            logger::log_info("cmd", &format!("Export saved to {}", path.display()));
+            Ok(path.to_string_lossy().to_string())
+        }
+        Err(e) => {
+            logger::log_error("cmd", &format!("Export failed: {}", e));
+            Err(e)
+        }
+    }
+}
+
+fn write_export_to_downloads(content: &str) -> AppResult<PathBuf> {
+    let dir = dirs::download_dir()
+        .or_else(dirs::home_dir)
+        .ok_or_else(|| AppError::Other("Could not determine a folder to save the export".into()))?;
+    std::fs::create_dir_all(&dir)?;
+    let stamp = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    write_export(&dir, &stamp, content)
+}
+
+/// Write `content` as `agy-credentials-<stamp>.json`, adding a counter when
+/// that name is taken. The file is created exclusively so two exports cannot
+/// clobber each other.
+fn write_export(dir: &Path, stamp: &str, content: &str) -> AppResult<PathBuf> {
+    for n in 0..1000 {
+        let name = if n == 0 {
+            format!("agy-credentials-{}.json", stamp)
+        } else {
+            format!("agy-credentials-{} ({}).json", stamp, n)
+        };
+        let path = dir.join(name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                if let Err(e) = file.write_all(content.as_bytes()) {
+                    drop(file);
+                    let _ = std::fs::remove_file(&path);
+                    return Err(e.into());
+                }
+                return Ok(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Err(AppError::Other(
+        "Could not find a free export filename".into(),
+    ))
+}
+
 /// Open the log directory in the system file manager.
 #[tauri::command]
 pub fn open_log_dir() -> AppResult<()> {
@@ -497,4 +560,31 @@ pub fn device_delete_version(id: String, version_id: String) -> AppResult<()> {
 #[tauri::command]
 pub fn device_restore_original(id: String) -> AppResult<DeviceProfile> {
     device::restore_original(&id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::write_export;
+
+    #[test]
+    fn export_file_names_do_not_overwrite() {
+        let dir = std::env::temp_dir().join(format!("agy-export-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let first = write_export(&dir, "2026-10-23", "{\"a\":1}").unwrap();
+        let second = write_export(&dir, "2026-10-23", "{\"a\":2}").unwrap();
+
+        assert_eq!(
+            first.file_name().unwrap(),
+            "agy-credentials-2026-10-23.json"
+        );
+        assert_eq!(
+            second.file_name().unwrap(),
+            "agy-credentials-2026-10-23 (1).json"
+        );
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "{\"a\":1}");
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), "{\"a\":2}");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

@@ -51,6 +51,7 @@ pub fn run() {
             get_status,
             // export
             export_accounts,
+            save_export_file,
             // logs
             open_log_dir,
         ])

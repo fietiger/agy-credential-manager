@@ -57,16 +57,12 @@
     .oauth-divider { margin-top: 16px; font-size: 0.75rem; color: #94a3b8; }
     .oauth-manual-row { display: flex; gap: 8px; margin-top: 6px; }
     .oauth-manual-row input { flex: 1; background: #0f3460; border: 1px solid #1a4a7a; border-radius: 6px; padding: 9px; color: #e2e8f0; font-size: 0.8rem; }
-    .import-section {
-      background: #16213e; border: 1px solid #0f3460; border-radius: 8px;
-      padding: 16px; margin-bottom: 20px; display: none;
-    }
-    .import-section.show { display: block; }
-    .import-section input {
+    .rtoken-input {
       width: 100%; background: #0f3460; border: 1px solid #1e40af;
       border-radius: 6px; padding: 8px; color: #eee; font-size: 0.85rem;
       margin-top: 8px;
     }
+    #export-msg { word-break: break-all; }
     .empty { text-align: center; color: #555; padding: 40px; font-size: 0.9rem; }
     .clients-section { margin-top: 18px; border: 1px solid #2b2b4d; border-radius: 8px; padding: 12px 14px; }
     .client-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; font-size: 0.85rem; color: #ddd; }
@@ -128,6 +124,7 @@
       <input type="file" id="input-import-file" accept=".json,application/json" style="display:none" />
     </div>
     <div class="oauth-msg" id="file-msg"></div>
+    <div class="oauth-msg" id="export-msg"></div>
     <div class="oauth-msg" id="activate-msg"></div>
 
     <div class="clients-section" id="clients-section">
@@ -136,19 +133,6 @@
         <button class="secondary" id="btn-import-local-2" title="Read the accounts agy CLI / Antigravity / Antigravity IDE are signed in with" style="padding:3px 10px; font-size:0.75rem;">Import from clients</button>
       </div>
       <div id="client-list" style="margin-top:6px;"></div>
-    </div>
-
-    <div class="import-section" id="import-section">
-      <strong>Import refresh token</strong>
-      <div style="margin-top:8px; font-size:0.8rem; color:#ccc;">
-        Paste a Google OAuth refresh token (starts with <code>1/</code> or <code>4/</code>):
-      </div>
-      <input type="text" id="input-rtoken" placeholder="Paste refresh token…" />
-      <div style="margin-top:10px; display:flex; gap:8px;">
-        <button id="btn-import-ok">Import</button>
-        <button class="secondary" id="btn-import-cancel">Cancel</button>
-      </div>
-      <div class="oauth-msg" id="import-msg"></div>
     </div>
 
     <div id="account-list"></div>
@@ -212,6 +196,27 @@
         <div style="margin-top:10px;">
           <button class="secondary" id="btn-oauth-cancel">Cancel</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="fp-overlay" id="rtoken-overlay" hidden>
+    <div class="fp-backdrop" id="rtoken-backdrop"></div>
+    <div class="fp-card" role="dialog" aria-modal="true" aria-label="Import refresh token">
+      <div class="fp-card-head">
+        <span class="t">Import refresh token</span>
+        <button class="secondary" id="rtoken-close">Close</button>
+      </div>
+      <div class="fp-body">
+        <div class="oauth-desc">
+          Paste a Google OAuth refresh token (starts with <code>1/</code> or <code>4/</code>):
+        </div>
+        <input class="rtoken-input" type="text" id="input-rtoken" placeholder="Paste refresh token…" />
+        <div style="margin-top:12px; display:flex; gap:8px;">
+          <button id="btn-import-ok">Import</button>
+          <button class="secondary" id="btn-import-cancel">Cancel</button>
+        </div>
+        <div class="oauth-msg" id="import-msg"></div>
       </div>
     </div>
   </div>
@@ -441,6 +446,7 @@
       if (e.key === 'Escape' && !$('fp-overlay').hidden) closeFp();
       if (e.key === 'Escape' && !$('import-overlay').hidden) closeImportOverlay();
       if (e.key === 'Escape' && !$('oauth-overlay').hidden) cancelOAuth();
+      if (e.key === 'Escape' && !$('rtoken-overlay').hidden) closeRtokenOverlay();
     });
 
     // ── clients ─────────────────────────────────────────────────────────
@@ -615,6 +621,19 @@
     }
 
     // ── manual import ────────────────────────────────────────────────────
+    function openRtokenOverlay() {
+      $('rtoken-overlay').hidden = false;
+      document.body.style.overflow = 'hidden';
+      $('import-msg').textContent = '';
+    }
+
+    function closeRtokenOverlay() {
+      $('rtoken-overlay').hidden = true;
+      document.body.style.overflow = '';
+      $('input-rtoken').value = '';
+      $('import-msg').textContent = '';
+    }
+
     async function importManual() {
       const token = $('input-rtoken').value.trim();
       if (!token) { alert('Please paste a refresh token first.'); return; }
@@ -630,8 +649,7 @@
         $('import-msg').className = 'oauth-msg success';
         $('import-msg').textContent = `Imported: ${acc.email}`;
         setTimeout(() => {
-          $('import-section').classList.remove('show');
-          $('import-msg').textContent = '';
+          closeRtokenOverlay();
           refresh();
         }, 1500);
       } catch (e) {
@@ -826,17 +844,19 @@
 
     // ── export ───────────────────────────────────────────────────────────
     async function exportJson() {
+      const msg = $('export-msg');
+      msg.className = 'oauth-msg pending';
+      msg.textContent = 'Exporting…';
       try {
         const data = await invoke('export_accounts');
-        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `agy-credentials-${new Date().toISOString().slice(0,10)}.json`;
-        a.click();
-        URL.revokeObjectURL(url);
+        const path = await invoke('save_export_file', {
+          content: JSON.stringify(data, null, 2),
+        });
+        msg.className = 'oauth-msg success';
+        msg.textContent = `Exported to ${path}`;
       } catch (e) {
-        alert('Export failed: ' + e);
+        msg.className = 'oauth-msg error';
+        msg.textContent = 'Export failed: ' + e;
       }
     }
 
@@ -849,12 +869,11 @@
     $('btn-oauth-complete').onclick = () => runOAuthWait('oauth_complete');
     $('btn-oauth-copy').onclick = copyOAuthUrl;
     $('btn-oauth-submit').onclick = submitOAuthCode;
-    $('btn-add-manual').onclick = () => $('import-section').classList.toggle('show');
+    $('btn-add-manual').onclick = openRtokenOverlay;
     $('btn-import-ok').onclick = importManual;
-    $('btn-import-cancel').onclick = () => {
-      $('import-section').classList.remove('show');
-      $('import-msg').textContent = '';
-    };
+    $('rtoken-close').onclick = closeRtokenOverlay;
+    $('rtoken-backdrop').onclick = closeRtokenOverlay;
+    $('btn-import-cancel').onclick = closeRtokenOverlay;
     $('btn-export').onclick = exportJson;
     // NOTE: inline onclick attributes are blocked by the production CSP,
     // so list buttons use data-action + this delegated listener.
