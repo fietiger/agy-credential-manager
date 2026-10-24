@@ -20,6 +20,7 @@ pub fn run() {
     logger::log_info("app", &format!("log file: {}", logger::log_dir_display()));
 
     let result = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             // account ops
             list_accounts,
@@ -51,6 +52,9 @@ pub fn run() {
             get_status,
             // export
             export_accounts,
+            default_export_path,
+            choose_export_path,
+            save_export_file,
             // logs
             open_log_dir,
         ])

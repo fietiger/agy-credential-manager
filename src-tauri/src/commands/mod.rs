@@ -10,6 +10,9 @@ use crate::modules::local_import;
 use crate::modules::logger;
 use crate::modules::oauth;
 use serde::Serialize;
+use std::path::PathBuf;
+use tauri::Manager;
+use tauri_plugin_dialog::DialogExt;
 
 // ── DTO types returned to the frontend ───────────────────────────────────
 
@@ -431,6 +434,71 @@ pub fn export_accounts() -> AppResult<AccountExportResponse> {
     account_store::export_accounts()
 }
 
+/// Default export target: the downloads folder plus the dated file name.
+#[tauri::command]
+pub fn default_export_path() -> AppResult<String> {
+    let dir = dirs::download_dir()
+        .or_else(dirs::home_dir)
+        .ok_or_else(|| AppError::Other("Could not determine a default export folder".into()))?;
+    Ok(dir.join(export_file_name()).to_string_lossy().to_string())
+}
+
+fn export_file_name() -> String {
+    format!(
+        "agy-credentials-{}.json",
+        chrono::Utc::now().format("%Y-%m-%d")
+    )
+}
+
+/// Open a native save dialog pre-filled with the current export target.
+/// Returns the chosen path, or `None` when the user cancels the dialog.
+#[tauri::command]
+pub async fn choose_export_path(
+    window: tauri::WebviewWindow,
+    current_path: String,
+) -> AppResult<Option<String>> {
+    let current = PathBuf::from(&current_path);
+    let file_name = current
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(export_file_name);
+    let mut dialog = window
+        .app_handle()
+        .dialog()
+        .file()
+        .set_file_name(file_name)
+        .add_filter("JSON", &["json"])
+        .set_parent(&window);
+    if let Some(dir) = current.parent().filter(|p| !p.as_os_str().is_empty()) {
+        dialog = dialog.set_directory(dir);
+    }
+    let chosen = dialog.blocking_save_file();
+    chosen
+        .map(|path| {
+            path.into_path()
+                .map(|p| p.to_string_lossy().to_string())
+                .map_err(|e| AppError::Other(e.to_string()))
+        })
+        .transpose()
+}
+
+/// Write the frontend-rendered export to the user-chosen path and return it.
+/// The path comes from the native save dialog, so overwriting it is intended.
+#[tauri::command]
+pub fn save_export_file(content: String, path: String) -> AppResult<String> {
+    let path = PathBuf::from(path);
+    match std::fs::write(&path, content.as_bytes()) {
+        Ok(()) => {
+            logger::log_info("cmd", &format!("Export saved to {}", path.display()));
+            Ok(path.to_string_lossy().to_string())
+        }
+        Err(e) => {
+            logger::log_error("cmd", &format!("Export failed: {}", e));
+            Err(e.into())
+        }
+    }
+}
+
 /// Open the log directory in the system file manager.
 #[tauri::command]
 pub fn open_log_dir() -> AppResult<()> {
@@ -497,4 +565,25 @@ pub fn device_delete_version(id: String, version_id: String) -> AppResult<()> {
 #[tauri::command]
 pub fn device_restore_original(id: String) -> AppResult<DeviceProfile> {
     device::restore_original(&id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::save_export_file;
+
+    #[test]
+    fn export_writes_to_the_chosen_path_and_overwrites() {
+        let dir = std::env::temp_dir().join(format!("agy-export-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("picked-by-user.json");
+        let path_str = path.to_string_lossy().to_string();
+
+        save_export_file("{\"v\":1}".into(), path_str.clone()).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"v\":1}");
+
+        save_export_file("{\"v\":2}".into(), path_str).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"v\":2}");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
