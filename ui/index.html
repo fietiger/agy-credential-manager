@@ -62,7 +62,7 @@
       border-radius: 6px; padding: 8px; color: #eee; font-size: 0.85rem;
       margin-top: 8px;
     }
-    #export-msg { word-break: break-all; }
+    #export-msg { margin-top: 0; word-break: break-all; }
     .empty { text-align: center; color: #555; padding: 40px; font-size: 0.9rem; }
     .clients-section { margin-top: 18px; border: 1px solid #2b2b4d; border-radius: 8px; padding: 12px 14px; }
     .client-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; font-size: 0.85rem; color: #ddd; }
@@ -124,7 +124,6 @@
       <input type="file" id="input-import-file" accept=".json,application/json" style="display:none" />
     </div>
     <div class="oauth-msg" id="file-msg"></div>
-    <div class="oauth-msg" id="export-msg"></div>
     <div class="oauth-msg" id="activate-msg"></div>
 
     <div class="clients-section" id="clients-section">
@@ -217,6 +216,19 @@
           <button class="secondary" id="btn-import-cancel">Cancel</button>
         </div>
         <div class="oauth-msg" id="import-msg"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="fp-overlay" id="export-overlay" hidden>
+    <div class="fp-backdrop" id="export-backdrop"></div>
+    <div class="fp-card" role="dialog" aria-modal="true" aria-label="Export JSON">
+      <div class="fp-card-head">
+        <span class="t">Export JSON</span>
+        <button class="secondary" id="export-close">Close</button>
+      </div>
+      <div class="fp-body">
+        <div class="oauth-msg" id="export-msg"></div>
       </div>
     </div>
   </div>
@@ -447,6 +459,7 @@
       if (e.key === 'Escape' && !$('import-overlay').hidden) closeImportOverlay();
       if (e.key === 'Escape' && !$('oauth-overlay').hidden) cancelOAuth();
       if (e.key === 'Escape' && !$('rtoken-overlay').hidden) closeRtokenOverlay();
+      if (e.key === 'Escape' && !$('export-overlay').hidden) closeExportOverlay();
     });
 
     // ── clients ─────────────────────────────────────────────────────────
@@ -843,8 +856,19 @@
     }
 
     // ── export ───────────────────────────────────────────────────────────
+    function openExportOverlay() {
+      $('export-overlay').hidden = false;
+      document.body.style.overflow = 'hidden';
+    }
+
+    function closeExportOverlay() {
+      $('export-overlay').hidden = true;
+      document.body.style.overflow = '';
+    }
+
     async function exportJson() {
       const msg = $('export-msg');
+      openExportOverlay();
       msg.className = 'oauth-msg pending';
       msg.textContent = 'Exporting…';
       try {
@@ -875,6 +899,8 @@
     $('rtoken-backdrop').onclick = closeRtokenOverlay;
     $('btn-import-cancel').onclick = closeRtokenOverlay;
     $('btn-export').onclick = exportJson;
+    $('export-close').onclick = closeExportOverlay;
+    $('export-backdrop').onclick = closeExportOverlay;
     // NOTE: inline onclick attributes are blocked by the production CSP,
     // so list buttons use data-action + this delegated listener.
     $('account-list').addEventListener('click', (e) => {
