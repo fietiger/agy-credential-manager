@@ -5,6 +5,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+# The release job creates a GitHub release and uploads assets, which needs a
+# write-scoped token; the repo default is read-only.
+permissions:
+  contents: write
+
 env:
   CARGO_TERM_COLOR: always
 
